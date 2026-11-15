@@ -69,8 +69,15 @@ def _weekday_sun0(y, m, d):
 def _get_i2c():
     global _i2c
     if _i2c is None:
-        _i2c = machine.I2C(0, sda=machine.Pin(I2C_SDA),
-                           scl=machine.Pin(I2C_SCL), freq=400000)
+        # SoftI2C, NOT machine.I2C: the panel driver (esp_panel)
+        # owns the hardware I2C controller for its expander, and
+        # whoever installs that driver first locks the other out -
+        # board-proven Nov 15, 2026 both ways (RTC-first made
+        # Board.begin() return False; panel-first made every RTC
+        # transaction fail). Bit-banging the same pins shares the
+        # wires without touching the peripheral.
+        _i2c = machine.SoftI2C(sda=machine.Pin(I2C_SDA),
+                               scl=machine.Pin(I2C_SCL), freq=100000)
     return _i2c
 
 
