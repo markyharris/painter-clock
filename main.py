@@ -206,10 +206,16 @@ def main():
         total = loc[3] * 60 + loc[4]
 
         # Compose only when something changed: a show or idle
-        # routine in progress, a minute boundary crossed since
-        # the last drawn frame, or the settle window after
-        # activity (he is still easing home).
+        # routine in progress, a routine due or a try-it queued
+        # (the scheduler must be serviced on its own timing, not
+        # only in post-show settle windows), a minute boundary
+        # crossed since the last drawn frame, or the settle
+        # window after activity (he is still easing home).
         active = (show.running or show.idle is not None
+                  or show.tryit is not None
+                  or (show.next_idle_at is not None
+                      and time.ticks_diff(now_ms,
+                                          show.next_idle_at) >= 0)
                   or total != drawn_total
                   or time.ticks_diff(now_ms, last_active_ms)
                   < SETTLE_MS)

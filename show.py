@@ -430,6 +430,12 @@ class Show:
         self.step_i = 0
         self.step_start = now_ms
         self.running = True
+        if self.idle is not None:
+            # a routine was cut short by the boundary: keep the
+            # cadence - the next routine is a full gap away, not
+            # due again the moment this show ends
+            self.next_idle_at = now_ms + IDLE_EVERY_MIN \
+                + random.randint(0, IDLE_EVERY_RAND)
         self.idle = None
         self.plane_pos = None
         # the show pre-empts any routine: clear its intent fields
@@ -675,17 +681,23 @@ class Show:
                     self.tryit = None
                     started = True
             elif self.next_idle_at is not None \
-                    and now_ms >= self.next_idle_at \
-                    and not self._sleeping():
-                name = self._pick_fitting()
-                if name is not None:
-                    self._start_idle(name, now_ms)
-                    started = True
+                    and now_ms >= self.next_idle_at:
+                if self._sleeping():
+                    # stay quiet - and re-arm a little way out:
+                    # main.py frames while a routine is due, so a
+                    # due time left in the past would keep the
+                    # loop awake all night
+                    self.next_idle_at = now_ms + 30000
                 else:
-                    # too late in the minute for anything -
-                    # retry just after the next show
-                    self.next_idle_at = now_ms \
-                        + (60 - self._sec) * 1000 + 2000
+                    name = self._pick_fitting()
+                    if name is not None:
+                        self._start_idle(name, now_ms)
+                        started = True
+                    else:
+                        # too late in the minute for anything -
+                        # retry just after the next show
+                        self.next_idle_at = now_ms \
+                            + (60 - self._sec) * 1000 + 2000
             if not started:
                 self._rest_intent()
                 return
