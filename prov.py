@@ -14,9 +14,11 @@
 # (or type your own) with a show-password peek. Saving writes ONLY
 # wifi_cfg.py and reboots. This module never touches config.json.
 #
-# SKELETON STATUS: the flow and page are real, but the portal has
-# NOT been round-trip tested on hardware yet (the other builds'
-# has). Sunday checklist includes a full forget/rejoin cycle.
+# STATUS: the flow and page are real (form -> wifi_cfg.py write
+# round-trip is desk-verified); the portal has NOT been
+# round-trip tested on THIS board's hardware yet (the pattern
+# has, on the other builds). The bench checklist includes a full
+# forget/rejoin cycle.
 import time
 
 import machine

@@ -1,24 +1,40 @@
 # main.py - Painter Clock: the conductor.
 #
-# Boot order matters and follows the other Micro builds:
-#   1. Sample BOOT (rehoming gesture) BEFORE anything that can hang
-#   2. RTC -> system clock (right time on the first frame)
-#   3. Wi-Fi join (or the setup portal, if asked / no creds)
-#   4. NTP sync (writes the RTC back)
-#   5. Display init through the display.py seam
-#   6. Admin server, updater pacing, then the animation loop:
-#      dial layer -> figure -> hands -> present, ~30 fps target
+# Boot order (each stage logs a "main:" line, so a Thonny console
+# shows the whole boot story):
+#   1. BOOT sample - the rehoming gesture, BEFORE anything that
+#      can hang (prov.run_portal() never returns)
+#   2. timekeep.init_rtc() - system clock from the PCF85063, so
+#      the first painted frame already shows local time
+#   3. Wi-Fi join from wifi_cfg.py; no usable creds OR a failed
+#      join drops into the PainterClock-Setup portal (rehoming)
+#   4. NTP sync - the authority; non-fatal if it fails (the RTC
+#      carries the clock, and the loop re-syncs when it can)
+#   5. display.init() -> the face's render_static() into the
+#      dial layer -> figure.prepare() (body rects over the dial)
+#   6. admin server + the updater's after-boot check (flag only)
+#   7. The run loop: show.Show driven by REAL local time
+#
+# The loop: show.update() composes a frame only when something
+# changed - a show running, an idle routine active, a minute
+# boundary crossed, or a short settle window after activity
+# (he eases home). Between routines the standing scene simply
+# holds on the panel; the loop sleeps in small slices and
+# services the admin server every slice, so the page stays
+# responsive without burning frames. Housekeeping (update
+# check, NTP re-sync, gc) runs only while he is idle.
+#
+# Fail soft everywhere: no NTP -> run from the RTC; display not
+# live -> keep painting into the canvases and serving admin.
 #
 # Settings persist in config.json on the board; credentials in
 # wifi_cfg.py. Neither is ever touched by the updater.
 import gc
 import time
 
-import machine
 import network
 
 import admin
-import clockface
 import display
 import figure as figmod
 import prov
@@ -26,127 +42,195 @@ import show as showmod
 import timekeep
 import updater
 
-FRAME_MS = 33  # ~30 fps target during motion; loop idles cheaply
+VERSION = "1.0"
+
+# Face selection (SPEC Nov 15 addendum): the admin "face" key
+# names a module with render_static()/compose(). Only the
+# painter exists so far; classic/digital plug in here later,
+# and unknown names fall back to the painter (bench_first_frame
+# uses the same map).
+FACES = {
+    "painter": "clockface",
+    # "classic": "face_classic",
+    # "digital": "face_digital",
+}
+
+JOIN_TIMEOUT_MS = 15000   # ~15 s, then the portal (rehoming)
+LOOP_MS = 25              # idle slice; admin is serviced per slice
+SETTLE_MS = 1500          # keep framing this long after activity
+HOUSEKEEP_MS = 5000       # housekeeping cadence while idle
 
 
-def join_wifi(ssid, password, tries=2):
-    """Join the saved network. Retries the whole attempt - the
-    radio can wedge after repeated soft reboots on these builds;
-    a full unplug is the cure for a truly wedged radio, not code."""
+def join_wifi(ssid, password):
+    """Join the saved network, one ~15 s window. Returns the
+    WLAN object or None."""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    for attempt in range(tries):
-        if wlan.isconnected():
-            return wlan
-        try:
-            wlan.connect(ssid, password)
-        except Exception as exc:
-            print("main: connect error:", exc)
-        start = time.ticks_ms()
-        while not wlan.isconnected():
-            if time.ticks_diff(time.ticks_ms(), start) > 15000:
-                break
-            time.sleep_ms(250)
-        if wlan.isconnected():
-            print("main: Wi-Fi up:", wlan.ifconfig())
-            return wlan
-        print("main: join attempt", attempt + 1, "failed; retrying")
-        try:
-            wlan.disconnect()
-        except Exception:
-            pass
-        time.sleep_ms(1000)
-    return wlan if wlan.isconnected() else None
+    if wlan.isconnected():
+        print("main: Wi-Fi already up:", wlan.ifconfig())
+        return wlan
+    try:
+        wlan.connect(ssid, password)
+    except Exception as exc:
+        print("main: Wi-Fi connect error:", exc)
+        return None
+    start = time.ticks_ms()
+    while not wlan.isconnected():
+        if time.ticks_diff(time.ticks_ms(), start) > JOIN_TIMEOUT_MS:
+            print("main: Wi-Fi join timed out after %d ms"
+                  % JOIN_TIMEOUT_MS)
+            return None
+        time.sleep_ms(200)
+    print("main: Wi-Fi up:", wlan.ifconfig())
+    return wlan
+
+
+def _face_module(name):
+    mod_name = FACES.get(name)
+    if mod_name is None:
+        print("main: face %r not built yet - using the painter"
+              % (name,))
+        mod_name = FACES["painter"]
+    return __import__(mod_name)
+
+
+def _wifi_str(wlan, ssid):
+    try:
+        if wlan is not None and wlan.isconnected():
+            return "%s - %s" % (ssid, wlan.ifconfig()[0])
+    except Exception:
+        pass
+    return "not connected"
+
+
+def _uptime_str(boot_ms):
+    s = time.ticks_diff(time.ticks_ms(), boot_ms) // 1000
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    if d:
+        return "%dd %02d:%02d:%02d" % (d, h, m, s)
+    return "%02d:%02d:%02d" % (h, m, s)
 
 
 def main():
-    # 1. rehoming gesture first - before anything that can hang
-    ssid, password = prov.load_creds()
-    if prov.boot_button_held() or not prov.creds_usable(ssid):
+    boot_ms = time.ticks_ms()
+    print("main: Painter Clock booting (code %s)" % VERSION)
+
+    # 1. Rehoming gesture first - before anything that can hang.
+    if prov.boot_button_held():
+        print("main: BOOT held just after power-up - setup portal")
         prov.run_portal()  # never returns (reboots on save)
 
-    # 2. RTC before Wi-Fi
-    timekeep.boot_set_from_rtc()
+    # 2. RTC -> system clock (local time from the first frame).
+    timekeep.init_rtc()
 
     cfg = admin.load_config()
-    app = {"config": cfg, "time_str": "", "time_source": "none",
-           "display_state": "stub", "changed": False}
+    app = {"config": cfg, "time_str": "--:--:--",
+           "time_source": timekeep.time_source(), "wifi": "",
+           "display_state": "starting", "uptime": "00:00:00",
+           "version": VERSION, "changed": False}
 
-    # 3 + 4. network, then NTP
+    # 3. Wi-Fi. No usable creds, or a failed join, means the
+    # setup portal - that is the rehoming contract.
+    ssid, password = prov.load_creds()
+    if not prov.creds_usable(ssid):
+        print("main: no saved Wi-Fi credentials - setup portal")
+        prov.run_portal()  # never returns
     wlan = join_wifi(ssid, password)
-    if wlan is not None:
-        timekeep.ntp_sync()
-    app["time_source"] = timekeep.source()
+    if wlan is None:
+        print("main: Wi-Fi join failed - setup portal")
+        prov.run_portal()  # never returns
+    app["wifi"] = _wifi_str(wlan, ssid)
 
-    # 5. display (stub-tolerant: everything below runs regardless)
+    # 4. NTP - authority, but non-fatal: the RTC carries us.
+    timekeep.sync_ntp()
+    app["time_source"] = timekeep.time_source()
+
+    # 5. Display, dial layer, figure rects.
     live = display.init()
-    app["display_state"] = "live" if live else "stub - no driver yet"
+    app["display_state"] = "live" if live else "not live - headless"
+    if not live:
+        print("main: display not live - running headless "
+              "(admin still served)")
+    display.set_backlight(cfg["brightness"])
+    face_name = cfg.get("face", "painter")
+    face_mod = _face_module(face_name)
+    face_mod.render_static(display.dial())
+    print("main: dial rendered (face: %s)" % face_name)
+    figmod.prepare(display.dial())
+    print("main: figure prepared")
 
-    # Static dial layer, rendered once into display.dial().
-    # NOTE (Nov 15 bench): do NOT build a full-size
-    # framebuf.FrameBuffer here - constructing one at 480x480 wedges
-    # the chip hard (see display.py). The dial lives in a plain
-    # bytearray Canvas; each frame starts by copying it in.
-    clockface.render_static(display.dial())
-
-    # 6. servers + the show
+    # 6. Admin + after-boot update check (flags only).
     admin.start()
-    updater.check()  # after-boot check: flags only, never installs
-    fig = figmod.Figure()
-    show = showmod.Show(fig)
+    updater.check()
 
-    last_ms = time.ticks_ms()
-    last_housekeep = last_ms
+    fig = figmod.Figure()
+    show = showmod.Show(fig, display.dial())
+    canvas = display.canvas()
+
+    # 7. The run loop.
+    print("main: running")
+    drawn_total = None      # total-minutes of the last drawn frame
+    last_active_ms = boot_ms
+    last_housekeep = boot_ms
+    last_status_s = -1
     while True:
         now_ms = time.ticks_ms()
-        dt = time.ticks_diff(now_ms, last_ms)
-        last_ms = now_ms
-        if dt < 0:
-            dt = 0
-        if dt > 250:
-            dt = 250
+        loc = timekeep.now_tuple()
+        total = loc[3] * 60 + loc[4]
 
-        loc = timekeep.now_local(cfg["tz_offset_h"])
-        total_minutes = loc[3] * 60 + loc[4]
-        app["time_str"] = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
-        app["time_source"] = timekeep.source()
+        # Compose only when something changed: a show or idle
+        # routine in progress, a minute boundary crossed since
+        # the last drawn frame, or the settle window after
+        # activity (he is still easing home).
+        active = (show.running or show.idle is not None
+                  or total != drawn_total
+                  or time.ticks_diff(now_ms, last_active_ms)
+                  < SETTLE_MS)
+        if active:
+            try:
+                show.update(canvas, now_ms, loc)
+                display.show()
+            except Exception as exc:
+                print("main: frame failed:", exc)
+            drawn_total = total
+            if show.running or show.idle is not None:
+                last_active_ms = now_ms
 
-        # choreography + rig
-        show.tick(now_ms, total_minutes)
-        fig.update(dt, now_ms)
-        pose = fig.pose()
-
-        # compose: dial layer -> figure -> hands -> present
-        fb = display.canvas()
-        fb.copy_from(display.dial())
-        fig.draw(fb, pose)
-        show.draw_hands(fb)
-        display.show()
-
-        # night mode (open question in SPEC sec.8 - wired, defaulted off)
-        if cfg["night_mode"]:
-            night = loc[3] >= 22 or loc[3] < 6
-            display.set_backlight(cfg["night_dim"] if night else 255)
+        # Status strings for the admin page, refreshed ~1/s.
+        if loc[5] != last_status_s:
+            last_status_s = loc[5]
+            app["time_str"] = "%02d:%02d:%02d" % (loc[3], loc[4],
+                                                  loc[5])
+            app["time_source"] = timekeep.time_source()
+            app["uptime"] = _uptime_str(boot_ms)
+            app["wifi"] = _wifi_str(wlan, ssid)
 
         admin.step(app)
         if app["changed"]:
             app["changed"] = False
             cfg = admin.load_config()
             app["config"] = cfg
+            display.set_backlight(cfg["brightness"])
+            if cfg.get("face", "painter") != face_name:
+                face_name = cfg.get("face", "painter")
+                face_mod = _face_module(face_name)
+                face_mod.render_static(display.dial())
+                figmod.prepare(display.dial())
+                drawn_total = None  # force a repaint
+                print("main: face changed to %s" % face_name)
 
-        # housekeeping, only while he's idle - never mid-show
+        # Housekeeping, only while he is idle - never mid-show.
         if not show.running and \
-                time.ticks_diff(now_ms, last_housekeep) > 5000:
+                time.ticks_diff(now_ms, last_housekeep) > HOUSEKEEP_MS:
             last_housekeep = now_ms
             if wlan is not None and wlan.isconnected():
                 updater.maybe_check()
                 timekeep.maybe_resync()
             gc.collect()
 
-        # frame pacing
-        spent = time.ticks_diff(time.ticks_ms(), now_ms)
-        if spent < FRAME_MS:
-            time.sleep_ms(FRAME_MS - spent)
+        time.sleep_ms(LOOP_MS)
 
 
 main()

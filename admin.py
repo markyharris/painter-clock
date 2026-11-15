@@ -8,23 +8,33 @@
 # on a browser.
 #
 # Settings live in config.json on the board (never overwritten by
-# the updater). Saving settings sets app["changed"] = True; main.py
-# notices and applies/restarts as needed.
+# the updater). Saving settings sets app["changed"] = True;
+# main.py notices and applies what it can live (brightness, face).
+#
+# Config keys (Nov 15, 2026): face, brightness, and the sleep
+# keys - sleep_enabled / sleep_start / sleep_end. The sleep
+# BEHAVIOUR (lights out, he lies down; SPEC Nov 13 addendum)
+# lands in the next phase; the keys and this UI are here now so
+# the hours are already set when it does. The old skeleton's
+# night_mode / night_dim checkbox fields are gone, and so is
+# tz_offset_h: the timezone is fixed UTC-7 in timekeep.py.
 import json
 import socket
 
 import updater
 
 DEFAULT_CONFIG = {
-    "tz_offset_h": -7,       # America/Phoenix: UTC-7, no DST
-    "night_mode": False,     # OPEN QUESTION (SPEC sec.8): 22:00-06:00?
-    "night_dim": 64,         # backlight level at night, if enabled
-    # Clock face module (SPEC Nov 15 addendum): "painter" (default,
-    # clockface.py) | "classic" (face_classic.py) | "digital"
-    # (face_digital.py) - classic/digital not built yet; unknown
-    # names fall back to the painter.
+    # Clock face module (SPEC Nov 15 addendum): "painter"
+    # (clockface.py) | "classic" | "digital" - classic/digital
+    # not built yet; unknown names fall back to the painter.
     "face": "painter",
+    "brightness": 255,       # panel backlight, 0..255
+    "sleep_enabled": False,  # lights-out hours (behaviour: next phase)
+    "sleep_start": "22:00",
+    "sleep_end": "06:00",
 }
+
+FACES = ("painter", "classic", "digital")
 
 _srv = None
 
@@ -56,6 +66,26 @@ def start():
     print("admin: listening on port 80")
 
 
+def _valid_hhmm(s):
+    """'HH:MM' with real ranges - the sleep hours' only shape."""
+    if not isinstance(s, str) or len(s) != 5 or s[2] != ":":
+        return False
+    try:
+        h = int(s[0:2])
+        m = int(s[3:5])
+    except ValueError:
+        return False
+    return 0 <= h < 24 and 0 <= m < 60
+
+
+def _face_options(current):
+    out = ""
+    for name in FACES:
+        sel = " selected" if name == current else ""
+        out += '<option value="%s"%s>%s</option>' % (name, sel, name)
+    return out
+
+
 def _page(app):
     u = updater.STATE
     upd = "UPDATE AVAILABLE (%d file(s))" % u["files"] \
@@ -67,13 +97,20 @@ def _page(app):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Painter Clock</title></head><body>
 <h2>Painter Clock</h2>
-<p>Time: %s (source: %s) &middot; Display: %s &middot; %s</p>
+<p>Time: %s (source: %s)<br>
+Wi-Fi: %s<br>
+Display: %s &middot; Uptime: %s &middot; Code: %s<br>
+Update: %s</p>
 <form method="POST" action="/settings">
-<p>UTC offset (hours): <input name="tz_offset_h" size="4"
+<p>Face: <select name="face">%s</select></p>
+<p>Brightness (0-255): <input name="brightness" size="4"
 value="%s"></p>
-<p><label><input type="checkbox" name="night_mode" %s>
-Night mode 22:00-06:00</label> &middot; night backlight:
-<input name="night_dim" size="4" value="%s"></p>
+<p><label><input type="checkbox" name="sleep_enabled" %s>
+Lights out - he sleeps</label> from
+<input name="sleep_start" size="5" value="%s"> to
+<input name="sleep_end" size="5" value="%s"> (HH:MM, 24h)<br>
+<i>The sleep behaviour arrives in the next build; the hours are
+saved now so they're ready.</i></p>
 <p><button type="submit">Save settings</button></p></form>
 <form method="POST" action="/update"><p>
 <button type="submit">Update now</button></p></form>
@@ -89,9 +126,28 @@ network - join it with a phone and follow the captive portal.</p>
 the man behind the glass who paints the time, minute by minute.
 This clock is a tribute, built with admiration.</i></p>
 </body></html>""" % (
-        app["time_str"], app["time_source"], app["display_state"],
-        upd, cfg["tz_offset_h"],
-        "checked" if cfg["night_mode"] else "", cfg["night_dim"])
+        app["time_str"], app["time_source"], app["wifi"],
+        app["display_state"], app["uptime"], app["version"], upd,
+        _face_options(cfg["face"]), cfg["brightness"],
+        "checked" if cfg["sleep_enabled"] else "",
+        cfg["sleep_start"], cfg["sleep_end"])
+
+
+def _urldecode(s):
+    s = s.replace("+", " ")
+    out = ""
+    i = 0
+    while i < len(s):
+        if s[i] == "%" and i + 2 < len(s):
+            try:
+                out += chr(int(s[i + 1:i + 3], 16))
+                i += 3
+                continue
+            except Exception:
+                pass
+        out += s[i]
+        i += 1
+    return out
 
 
 def _parse_form(req):
@@ -102,13 +158,14 @@ def _parse_form(req):
     for pair in req[idx + 4:].split("&"):
         if "=" in pair:
             k, v = pair.split("=", 1)
-            out[k.replace("+", " ")] = v.replace("+", " ")
+            out[_urldecode(k)] = _urldecode(v)
     return out
 
 
 def step(app):
     """Service at most one request. app is main.py's shared state
-    dict: config, time_str, time_source, display_state, changed."""
+    dict: config, time_str, time_source, wifi, display_state,
+    uptime, version, changed."""
     if _srv is None:
         return
     try:
@@ -120,14 +177,22 @@ def step(app):
         if "POST /settings" in req:
             form = _parse_form(req)
             cfg = app["config"]
+            if form.get("face") in FACES:
+                cfg["face"] = form["face"]
             try:
-                cfg["tz_offset_h"] = int(form.get("tz_offset_h",
-                                                  cfg["tz_offset_h"]))
-                cfg["night_dim"] = int(form.get("night_dim",
-                                                cfg["night_dim"]))
+                b = int(form.get("brightness", cfg["brightness"]))
+                if b < 0:
+                    b = 0
+                if b > 255:
+                    b = 255
+                cfg["brightness"] = b
             except ValueError:
                 pass
-            cfg["night_mode"] = "night_mode" in form
+            cfg["sleep_enabled"] = "sleep_enabled" in form
+            if _valid_hhmm(form.get("sleep_start", "")):
+                cfg["sleep_start"] = form["sleep_start"]
+            if _valid_hhmm(form.get("sleep_end", "")):
+                cfg["sleep_end"] = form["sleep_end"]
             save_config(cfg)
             app["changed"] = True
             conn.send("HTTP/1.0 200 OK\r\n\r\nSaved.")
