@@ -31,6 +31,14 @@
 # class draws into them with row-slice writes, never a full-size
 # FrameBuffer), and show() ships the frame in 4 bands of 120 lines
 # via memoryview slices - no copies, no big transfers.
+#
+# Second bench lesson (Nov 15, later): Python-loop drawing is far
+# too slow on the board - Canvas-drawn dial render 54,410 ms, hand
+# compose 20,365 ms, while show() is 40 ms. So clockface draws the
+# dial and hands with genuine C framebuf primitives inside band
+# windows (Canvas.band_windows(): 480x120 FrameBuffers, the proven
+# size - a window fill_rect + show() was bench-verified instant).
+# Canvas's Python primitives remain for figure/sprites (slow paths).
 # ------------------------------------------------------------------
 import framebuf
 import math
@@ -219,6 +227,20 @@ class Canvas:
         if len(seg) < span:
             raise ValueError("window overruns canvas")
         return framebuf.FrameBuffer(seg, w, h, framebuf.RGB565, WIDTH)
+
+    def band_windows(self):
+        """Yield (window, y) for each horizontal band of the canvas:
+        real framebuf.FrameBuffers, 480x120 with stride=WIDTH, over
+        the band's rows - the same geometry show() ships. This is
+        how clockface draws the dial and hands: genuine C framebuf
+        primitives (fill/ellipse/poly) at C speed, band by band,
+        never a full-size FrameBuffer (which wedges the chip).
+        Window-local coordinates: subtract the yielded y from canvas
+        y coordinates; framebuf clips at the band's edges."""
+        y = 0
+        while y < HEIGHT:
+            yield self.window(0, y, WIDTH, BAND_H), y
+            y += BAND_H
 
 
 def blit_sprite(canvas, sprite, sw, sh, x, y, key):

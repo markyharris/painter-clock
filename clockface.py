@@ -18,14 +18,18 @@
 #
 # Pure drawing + geometry: no driver imports (display.py owns the
 # panel), no state beyond the remembered static canvas. The drawing
-# surface is duck-typed - display.Canvas in production (a full-size
-# framebuf.FrameBuffer WEDGES this firmware; see display.py), any
-# object with fill/fill_rect/line/ellipse works.
+# surface is a display.Canvas. The dial and hands are drawn with
+# genuine C framebuf primitives (fill/ellipse/poly) inside band
+# windows - Canvas.band_windows() - because the Python-loop drawing
+# measured 54 s (dial) / 20 s (hands) on the board (Nov 15 bench;
+# SPEC addendum). thick_line() below stays on the Canvas primitives:
+# figure.py still uses it, and the figure is a slow path by design.
 #
 # show.py decides WHAT is revealed during a show; the helpers here
 # know HOW a hand looks - 14 segments, fixed hand-painted wobble,
 # tapering width - exactly as the prototype settled it (SPEC.md 3.2).
 import math
+from array import array
 
 NAME = "painter"
 
@@ -100,36 +104,89 @@ def thick_line(fb, x0, y0, x1, y1, width, colour):
         i += 1
 
 
-def draw_hand(fb, angle_deg, length, base_width, reveal, colour=INK):
-    """Draw the visible part of a hand. reveal 0..1 = stroke
-    progress; the frontier segment is drawn partially, the rest not
-    at all. During wipe the caller passes the OLD angle with reveal
-    shrinking; during paint the NEW angle with reveal growing."""
-    if reveal <= 0.003:
-        return
+def _hand_coords(angle_deg, length, base_width, reveal):
+    """The visible part of a hand as one filled polygon, in canvas
+    coords (flat array('h')): the wobbled centreline from the same
+    14-segment math as ever (_seg_point), offset perpendicular by
+    half the local width - the same taper and the same radius
+    (w//2) the old disc-stamped thick_line used, so the silhouette
+    matches to ~a pixel. Reveal semantics are the old ones: whole
+    segments up to the stroke frontier, the frontier segment
+    partial, nothing beyond it."""
     visible = reveal * SEG
+    # centreline samples: (f, governing segment) - segment i's width
+    # comes from its start f0 = i/SEG, exactly as the old code had it
+    samples = [(0.0, 0)]
     i = 0
     while i < SEG:
-        f0 = i / SEG
         if i + 1 > visible + 0.001:
             frac = visible - i
             if frac <= 0:
                 break
-            f1 = (i + frac) / SEG
-            x0, y0 = _seg_point(angle_deg, length, f0)
-            x1, y1 = _seg_point(angle_deg, length, f1)
-            w = max(3, int(base_width * (1 - f0 * 0.45)))
-            thick_line(fb, x0, y0, x1, y1, w, colour)
+            samples.append(((i + frac) / SEG, i))
             break
-        f1 = (i + 1) / SEG
-        x0, y0 = _seg_point(angle_deg, length, f0)
-        x1, y1 = _seg_point(angle_deg, length, f1)
-        w = max(3, int(base_width * (1 - f0 * 0.45)))
-        thick_line(fb, x0, y0, x1, y1, w, colour)
+        samples.append(((i + 1) / SEG, i))
         i += 1
+    pts = [_seg_point(angle_deg, length, f) for f, _s in samples]
+    hws = []
+    for _f, s in samples:
+        w = max(3, int(base_width * (1 - (s / SEG) * 0.45)))
+        hws.append(max(1, w // 2))
+    n = len(pts)
+    left = []
+    right = []
+    for j in range(n):
+        xa, ya = pts[max(0, j - 1)]
+        xb, yb = pts[min(n - 1, j + 1)]
+        tx, ty = xb - xa, yb - ya
+        d = math.sqrt(tx * tx + ty * ty)
+        if d < 0.001:
+            a = math.radians(angle_deg)
+            nx, ny = math.cos(a), math.sin(a)
+        else:
+            nx, ny = -ty / d, tx / d
+        x, y = pts[j]
+        left.append((x + nx * hws[j], y + ny * hws[j]))
+        right.append((x - nx * hws[j], y - ny * hws[j]))
+    flat = left + right[::-1]
+    coords = array("h", [int(round(v)) for xy in flat for v in xy])
+    return coords
+
+
+def draw_hand(fb, angle_deg, length, base_width, reveal, colour=INK):
+    """Draw the visible part of a hand. reveal 0..1 = stroke
+    progress; the frontier segment is drawn partially, the rest not
+    at all. During wipe the caller passes the OLD angle with reveal
+    shrinking; during paint the NEW angle with reveal growing.
+    Drawn as ONE filled polygon (framebuf.poly) per band window -
+    the old disc-stamped version cost ~10 s per hand on the board."""
+    if reveal <= 0.003:
+        return
+    coords = _hand_coords(angle_deg, length, base_width, reveal)
     # centre boss
     r = int(base_width * 0.85)
-    fb.ellipse(CX, CY, r, r, colour, True)
+    for win, y0 in fb.band_windows():
+        win.poly(0, -y0, coords, colour, True)
+        win.ellipse(CX, CY - y0, r, r, colour, True)
+
+
+def _tick_coords(ang, r0, r1, w):
+    """One tick as a filled polygon (canvas coords): the old shape
+    was a capsule - thick_line discs of radius w//2 along the
+    segment - so the polygon is the segment widened by that radius
+    and lengthened by it at both ends (square caps for round ones;
+    the silhouette matches to ~a pixel)."""
+    r = max(1, w // 2)
+    a = math.radians(ang)
+    dx, dy = math.sin(a), -math.cos(a)     # outward along the tick
+    px, py = math.cos(a), math.sin(a)     # perpendicular
+    x0, y0 = CX + dx * (r0 - r), CY + dy * (r0 - r)
+    x1, y1 = CX + dx * (r1 + r), CY + dy * (r1 + r)
+    pts = (x0 + px * r, y0 + py * r,
+           x1 + px * r, y1 + py * r,
+           x1 - px * r, y1 - py * r,
+           x0 - px * r, y0 - py * r)
+    return array("h", [int(round(v)) for v in pts])
 
 
 def draw_dial(fb):
@@ -137,11 +194,11 @@ def draw_dial(fb):
     longer hour ticks, longest at the quarters. Ticks only (see
     NUMERALS above). Rendered ONCE into the dial canvas at boot (or
     on a face switch) and copied under every frame - it never
-    changes while this face is selected."""
-    fb.fill(RIM)
-    fb.ellipse(CX, CY, DIAL_R + 6, DIAL_R + 6, CREAM_SHADE, True)
-    fb.ellipse(CX, CY, DIAL_R, DIAL_R, CREAM, True)
+    changes while this face is selected. Drawn band by band with C
+    framebuf primitives (fill/ellipse/poly) through band_windows();
+    the same drawing in Python loops took 54 s on the board."""
     r1 = DIAL_R - 8
+    ticks = []
     i = 0
     while i < 60:
         ang = i * 6
@@ -151,10 +208,15 @@ def draw_dial(fb):
             r0, w = DIAL_R - 22, 3
         else:                  # minutes
             r0, w = DIAL_R - 16, 2
-        x0, y0 = point_at(ang, r0)
-        x1, y1 = point_at(ang, r1)
-        thick_line(fb, x0, y0, x1, y1, w, TICK)
+        ticks.append(_tick_coords(ang, r0, r1, w))
         i += 1
+    for win, y0 in fb.band_windows():
+        win.fill(RIM)
+        win.ellipse(CX, CY - y0, DIAL_R + 6, DIAL_R + 6,
+                    CREAM_SHADE, True)
+        win.ellipse(CX, CY - y0, DIAL_R, DIAL_R, CREAM, True)
+        for coords in ticks:
+            win.poly(0, -y0, coords, TICK, True)
 
 
 def minute_angle(total_minutes):
