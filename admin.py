@@ -9,10 +9,12 @@
 #
 # Settings live in config.json on the board (never overwritten by
 # the updater). Saving settings sets app["changed"] = True;
-# main.py notices and applies what it can live (brightness, face).
+# main.py notices and applies what it can live (brightness, face,
+# frost).
 #
-# Config keys (Nov 15, 2026): face, brightness, and the sleep
-# keys - sleep_enabled / sleep_start / sleep_end. The sleep
+# Config keys (Nov 15, 2026): face, brightness, frost (the
+# frosted-glass strength 0..100 - 0 is the sharp look), and the
+# sleep keys - sleep_enabled / sleep_start / sleep_end. The sleep
 # BEHAVIOUR (lights out, he lies down; SPEC Nov 13 addendum)
 # lands in the next phase; the keys and this UI are here now so
 # the hours are already set when it does. The old skeleton's
@@ -29,6 +31,7 @@ DEFAULT_CONFIG = {
     # not built yet; unknown names fall back to the painter.
     "face": "painter",
     "brightness": 255,       # panel backlight, 0..255
+    "frost": 55,             # frosted glass, 0..100 (0 = sharp)
     "sleep_enabled": False,  # lights-out hours (behaviour: next phase)
     "sleep_start": "22:00",
     "sleep_end": "06:00",
@@ -105,6 +108,8 @@ Update: %s</p>
 <p>Face: <select name="face">%s</select></p>
 <p>Brightness (0-255): <input name="brightness" size="4"
 value="%s"></p>
+<p>Frosted glass (0-100): <input name="frost" size="4"
+value="%s"></p>
 <p><label><input type="checkbox" name="sleep_enabled" %s>
 Lights out - he sleeps</label> from
 <input name="sleep_start" size="5" value="%s"> to
@@ -128,7 +133,7 @@ This clock is a tribute, built with admiration.</i></p>
 </body></html>""" % (
         app["time_str"], app["time_source"], app["wifi"],
         app["display_state"], app["uptime"], app["version"], upd,
-        _face_options(cfg["face"]), cfg["brightness"],
+        _face_options(cfg["face"]), cfg["brightness"], cfg["frost"],
         "checked" if cfg["sleep_enabled"] else "",
         cfg["sleep_start"], cfg["sleep_end"])
 
@@ -186,6 +191,15 @@ def step(app):
                 if b > 255:
                     b = 255
                 cfg["brightness"] = b
+            except ValueError:
+                pass
+            try:
+                fr = int(form.get("frost", cfg["frost"]))
+                if fr < 0:
+                    fr = 0
+                if fr > 100:
+                    fr = 100
+                cfg["frost"] = fr
             except ValueError:
                 pass
             cfg["sleep_enabled"] = "sleep_enabled" in form

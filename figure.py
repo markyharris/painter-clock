@@ -34,6 +34,20 @@
 # figure.bucket_x at runtime (the future rearrangement idle)
 # needs a prepare() rebuild to move the drawn bucket - the dip
 # TARGET follows bucket_x immediately, the picture would not.
+#
+# FROSTED GLASS (Nov 15, 2026; SPEC addendum): he stands BEHIND
+# frosted glass - the hands are painted ON it and stay crisp
+# (show.py composes figure-then-hands, so they always land on
+# top). The frost is baked into the rects at prepare(): a pale
+# halo pass (the whole silhouette re-drawn at compass offsets in
+# a pale frost colour) under the body drawn in veiled colours
+# (every body colour mixed toward a pale cool tint). The arms
+# and tool, drawn per frame, get the same treatment in draw().
+# Strength is the "frost" config key, 0..100, default 55;
+# frost=0 skips the halo and uses the raw palette, reproducing
+# the sharp v2 picture pixel-for-pixel (the A/B escape hatch,
+# and the cuckoo's clear-circle patch will draw the head sharp
+# the same way - see _draw_head).
 import math
 from array import array
 
@@ -43,7 +57,11 @@ import display
 # --- rig constants (480-scale, px) ---
 HOME_FEET = (240, 446)
 SHOULDER_H = 152                 # shoulder height above feet
-HEAD_H = 199                     # head centre height above feet
+HEAD_H = 187                     # head centre height above feet
+                                 # (was 199 - Mark, Nov 15: the
+                                 # neck read too long; the head
+                                 # now sits 12 px closer to the
+                                 # shoulders in both poses)
 HOME_SHOULDER = (244, HOME_FEET[1] - SHOULDER_H)
 BUCKET = (332, 436)
 SHOULDER_CLAMP_X = 106           # shoulder may stray this far from home x
@@ -81,6 +99,75 @@ BRUSH_WOOD = clockface.rgb565(138, 107, 69)
 BUCKET_COL = clockface.rgb565(107, 111, 117)
 BUCKET_DK = clockface.rgb565(84, 88, 94)
 PAINT = clockface.INK
+
+# --- the palette the draw functions consume ---
+# _draw_body / _draw_bucket / Figure.draw never touch the raw
+# constants above directly; they index a palette tuple, so
+# prepare() can hand them the raw palette (sharp), a veiled one
+# (frosted), or a flat halo-colour one (the halo pass).
+_P_OV = 0        # overalls
+_P_OVDK = 1      # overalls dark (legs)
+_P_SHIRT = 2
+_P_SKIN = 3
+_P_CAP = 4
+_P_CAPDK = 5
+_P_BOOT = 6
+_P_BCOL = 7      # bucket body
+_P_BDK = 8       # bucket rim / dark
+_P_PAINT = 9     # paint (bucket surface, brush tip)
+_P_WOOD = 10     # brush handle
+_P_CLOTH = 11    # wiping cloth
+_RAW_PALETTE = (OVERALLS, OVERALLS_DK, SHIRT, SKIN, CAP, CAP_DK,
+                BOOT, BUCKET_COL, BUCKET_DK, PAINT, BRUSH_WOOD,
+                CLOTH)
+
+# --- frosted glass ---
+DEFAULT_FROST = 55               # config "frost" default
+FROST_TINT = (224, 235, 246)     # pale cool white, 888 - the veil
+                                 # mixes toward this
+FROST_HALO = clockface.rgb565(238, 244, 250)   # the halo colour:
+                                 # the tint lifted toward white
+_HALO_PALETTE = (FROST_HALO,) * len(_RAW_PALETTE)
+_VEIL = 0.65                     # colour mix reached at frost=100
+
+_frost = DEFAULT_FROST           # current strength, 0..100
+_pal = _RAW_PALETTE              # palette for _frost (set by
+                                 # prepare() via _frost_state)
+_halo_r = 0                      # halo dilation radius, px
+
+
+def _mix565(colour, f):
+    """A RGB565 colour mixed toward FROST_TINT by f (0..1). The
+    mix happens in 888 and converts back through rgb565(); the
+    raw palette was built with that same function, so the mix is
+    hue-true to the original colours (checked on skin / shirt /
+    overalls in the desk previews - they pale and cool, they do
+    not shift hue)."""
+    if f <= 0.0:
+        return colour
+    r5 = (colour >> 11) & 0x1F
+    g6 = (colour >> 5) & 0x3F
+    b5 = colour & 0x1F
+    r8 = (r5 << 3) | (r5 >> 2)
+    g8 = (g6 << 2) | (g6 >> 4)
+    b8 = (b5 << 3) | (b5 >> 2)
+    return clockface.rgb565(
+        int(r8 + (FROST_TINT[0] - r8) * f + 0.5),
+        int(g8 + (FROST_TINT[1] - g8) * f + 0.5),
+        int(b8 + (FROST_TINT[2] - b8) * f + 0.5))
+
+
+def _frost_state(frost):
+    """(palette, halo radius) for a frost strength 0..100. At 0:
+    the raw palette and no halo - the sharp v2 look, reproduced
+    exactly. The radius steps 1 px up to strength 74, 2 px above:
+    a 1-2 px soft edge, the prototype's ~2.6 px blur at 880
+    scale."""
+    if frost <= 0:
+        return _RAW_PALETTE, 0
+    f = frost / 100.0 * _VEIL
+    return tuple(_mix565(c, f) for c in _RAW_PALETTE), \
+        (1 if frost < 75 else 2)
 
 # --- the snap grids (drawn-body offsets from HOME_FEET, px) ---
 # pose() snaps the eased body offset to the nearest grid point;
@@ -283,32 +370,35 @@ def _fill_rect_v(views, x, y, w, h, colour):
 
 
 # --- the body, drawn into a view list (prepare() only) ---
+# All three take a palette (see _P_* above): the raw palette
+# draws him sharp, a veiled palette frosts him, and the flat
+# halo palette draws the frost's halo pass.
 
-def _draw_body(views, fig, feet, bend):
-    """The armless body at `feet` with the given bend, in canvas
-    coords. Flat-shaded: boots, legs, overalls + bib + straps
-    over a shirt torso, neck, head and cap - all C framebuf
-    primitives through the views. Deterministic in (feet, bend):
-    prepare() bakes exactly this into the rects, and pose()
-    derives the arm anchors from the same feet/bend, so the arms
-    land on the drawn torso."""
+def _draw_torso(views, fig, feet, bend, pal):
+    """The armless body below the neck at `feet` with the given
+    bend, in canvas coords. Flat-shaded: boots, legs, overalls +
+    bib + straps over a shirt torso - all C framebuf primitives
+    through the views. Deterministic in (feet, bend): prepare()
+    bakes exactly this into the rects, and pose() derives the
+    arm anchors from the same feet/bend, so the arms land on
+    the drawn torso."""
     fx, fy = feet
 
     def bp(x, y):
         return fig._bend_point(x, y, bend, feet)
 
-    head = bp(fx, fy - HEAD_H)
     # boots and legs - never bent (the bend is at the waist)
-    _ellipse_v(views, fx - 10, fy - 2, 12, 5, BOOT)
-    _ellipse_v(views, fx + 13, fy - 2, 12, 5, BOOT)
+    _ellipse_v(views, fx - 10, fy - 2, 12, 5, pal[_P_BOOT])
+    _ellipse_v(views, fx + 13, fy - 2, 12, 5, pal[_P_BOOT])
     _poly_v(views, _quad(fx - 19, fy - 86, fx - 5, fy - 86,
                          fx - 6, fy - 2, fx - 20, fy - 2),
-            OVERALLS_DK)
+            pal[_P_OVDK])
     _poly_v(views, _quad(fx + 5, fy - 86, fx + 19, fy - 86,
                          fx + 20, fy - 2, fx + 6, fy - 2),
-            OVERALLS_DK)
+            pal[_P_OVDK])
     # pelvis (the torso's bent bottom edge overlaps this)
-    _fill_rect_v(views, int(fx) - 20, int(fy) - 90, 40, 14, OVERALLS)
+    _fill_rect_v(views, int(fx) - 20, int(fy) - 90, 40, 14,
+                 pal[_P_OV])
     # torso: shirt everywhere, overalls over the lower part, with
     # the bib line at 30% and two straps up to the shoulders
     tl = bp(fx - 24, fy - SHOULDER_H)
@@ -316,11 +406,11 @@ def _draw_body(views, fig, feet, bend):
     bl = bp(fx - 20, fy - HIP_H)
     br = bp(fx + 20, fy - HIP_H)
     _poly_v(views, _quad(tl[0], tl[1], tr[0], tr[1],
-                         br[0], br[1], bl[0], bl[1]), SHIRT)
+                         br[0], br[1], bl[0], bl[1]), pal[_P_SHIRT])
     ml = _lerp(tl, bl, 0.30)
     mr = _lerp(tr, br, 0.30)
     _poly_v(views, _quad(ml[0], ml[1], mr[0], mr[1],
-                         br[0], br[1], bl[0], bl[1]), OVERALLS)
+                         br[0], br[1], bl[0], bl[1]), pal[_P_OV])
     for f0 in (0.08, 0.74):     # straps, as fractions along the top
         s0 = _lerp(tl, tr, f0)
         s1 = _lerp(tl, tr, f0 + 0.14)
@@ -328,48 +418,89 @@ def _draw_body(views, fig, feet, bend):
         b1 = _lerp(ml, mr, f0 + 0.12)
         _poly_v(views, _quad(s0[0], s0[1], s1[0], s1[1],
                              b1[0], b1[1], b0[0], b0[1]),
-            OVERALLS)
+            pal[_P_OV])
+
+
+def _draw_head(views, fig, feet, bend, pal):
+    """Neck, head and cap at `feet` with the given bend, drawn
+    through the bend transform (the cap tilts with the head in
+    the dip - an axis-aligned ellipse there read as a detached
+    blob in v1).
+
+    Kept SEPARATE from _draw_torso on purpose, with the palette
+    as a parameter: the cuckoo's clear-circle patch (a future
+    phase - he leans in and wipes a porthole in the frost) must
+    be able to draw the head SHARP whatever the configured
+    frost, and this is that path: call it with _RAW_PALETTE and
+    no halo pass - exactly the frost=0 treatment - inside the
+    wiped circle."""
+    fx, fy = feet
+
+    def bp(x, y):
+        return fig._bend_point(x, y, bend, feet)
+
     # neck - bridges head and torso, bends with the torso group
     n0 = bp(fx - 6, fy - HEAD_H + 10)
     n1 = bp(fx + 6, fy - HEAD_H + 10)
     n2 = bp(fx + 7, fy - SHOULDER_H + 8)
     n3 = bp(fx - 7, fy - SHOULDER_H + 8)
     _poly_v(views, _quad(n0[0], n0[1], n1[0], n1[1],
-                         n2[0], n2[1], n3[0], n3[1]), SKIN)
-    # head and cap (baked in - v1 has no separate head tracking).
-    # The cap is a band across the top of the head, drawn through
-    # the bend transform so it tilts with the head in the dip -
-    # an axis-aligned ellipse there read as a detached blob.
-    hx, hy = head
-    _ellipse_v(views, hx, hy, 20, 23, SKIN)
+                         n2[0], n2[1], n3[0], n3[1]), pal[_P_SKIN])
+    # head and cap (baked into the rects - v1 has no separate
+    # head tracking). The cap sits HIGH (Mark, Nov 15): the band
+    # ends 8 px above the head centre and the brim 5, so a real
+    # forehead shows under it.
+    hx, hy = bp(fx, fy - HEAD_H)
+    _ellipse_v(views, hx, hy, 20, 23, pal[_P_SKIN])
     c0 = bp(fx - 19, fy - HEAD_H - 22)
     c1 = bp(fx + 19, fy - HEAD_H - 22)
-    c2 = bp(fx + 19, fy - HEAD_H - 3)
-    c3 = bp(fx - 19, fy - HEAD_H - 3)
+    c2 = bp(fx + 19, fy - HEAD_H - 8)
+    c3 = bp(fx - 19, fy - HEAD_H - 8)
     _poly_v(views, _quad(c0[0], c0[1], c1[0], c1[1],
-                         c2[0], c2[1], c3[0], c3[1]), CAP)
-    b0 = bp(fx - 19, fy - HEAD_H - 3)
-    b1 = bp(fx + 20, fy - HEAD_H - 3)
-    b2 = bp(fx + 20, fy - HEAD_H + 1)
-    b3 = bp(fx - 19, fy - HEAD_H + 1)
+                         c2[0], c2[1], c3[0], c3[1]), pal[_P_CAP])
+    b0 = bp(fx - 19, fy - HEAD_H - 8)
+    b1 = bp(fx + 20, fy - HEAD_H - 8)
+    b2 = bp(fx + 20, fy - HEAD_H - 5)
+    b3 = bp(fx - 19, fy - HEAD_H - 5)
     _poly_v(views, _quad(b0[0], b0[1], b1[0], b1[1],
-                         b2[0], b2[1], b3[0], b3[1]), CAP_DK)
+                         b2[0], b2[1], b3[0], b3[1]), pal[_P_CAPDK])
+    # the face (Mark, Nov 15): two bold eyes and a simple mouth,
+    # in the palette's paint colour - near-black, so it reads at
+    # 480 across the dial and still reads through the frost
+    # (the veiled paint sits far darker than the veiled skin;
+    # on the sharp path it is pure INK). Every point goes
+    # through bp, so the face turns with the head in the dip.
+    e_l = bp(fx - 7, fy - HEAD_H + 3)
+    e_r = bp(fx + 7, fy - HEAD_H + 3)
+    _ellipse_v(views, e_l[0], e_l[1], 2, 3, pal[_P_PAINT])
+    _ellipse_v(views, e_r[0], e_r[1], 2, 3, pal[_P_PAINT])
+    mpts = (bp(fx - 6, fy - HEAD_H + 10), bp(fx, fy - HEAD_H + 12),
+            bp(fx + 6, fy - HEAD_H + 10), bp(fx + 6, fy - HEAD_H + 13),
+            bp(fx, fy - HEAD_H + 15), bp(fx - 6, fy - HEAD_H + 13))
+    _poly_v(views, array("h", [int(round(v)) for p in mpts
+                               for v in p]), pal[_P_PAINT])
 
 
-def _draw_bucket(views):
-    bx, by = BUCKET
+def _draw_body(views, fig, feet, bend, pal):
+    """The whole armless body: torso + head, one palette."""
+    _draw_torso(views, fig, feet, bend, pal)
+    _draw_head(views, fig, feet, bend, pal)
+
+
+def _draw_bucket(views, pal, dx=0, dy=0):
+    bx, by = BUCKET[0] + dx, BUCKET[1] + dy
     _poly_v(views, _quad(bx - 17, by - 12, bx + 17, by - 12,
                          bx + 13, by + 12, bx - 13, by + 12),
-            BUCKET_COL)
-    _ellipse_v(views, bx, by - 12, 17, 5, BUCKET_DK)
-    _ellipse_v(views, bx, by - 13, 14, 4, PAINT)
+            pal[_P_BCOL])
+    _ellipse_v(views, bx, by - 12, 17, 5, pal[_P_BDK])
+    _ellipse_v(views, bx, by - 13, 14, 4, pal[_P_PAINT])
 
 
 # --- rect pre-compositing (once per dial, at boot) ---
 
 _rects = None          # {"stand": {(ox, oy): {band: (fb, bx, by)}},
                        #  "dip": {...}}
-_prep_key = None       # (id(dial canvas), dial fingerprint)
+_prep_key = None       # (id(dial canvas), dial fingerprint, frost)
 
 
 def _dial_fingerprint(dial):
@@ -381,11 +512,13 @@ def _dial_fingerprint(dial):
             p(60, 240), p(420, 240), p(240, 430))
 
 
-def _padded_box():
-    """The tracked extent, padded 2 px and clamped to the dial."""
-    return (max(0, _track[0] - 2), max(0, _track[1] - 2),
-            min(display.WIDTH - 1, _track[2] + 2),
-            min(display.HEIGHT - 1, _track[3] + 2))
+def _padded_box(pad=2):
+    """The tracked extent, padded and clamped to the dial. The
+    pad is 2 px sharp, 2 + the halo radius when frosted, so the
+    halo pass is never clipped by the rect's own edge."""
+    return (max(0, _track[0] - pad), max(0, _track[1] - pad),
+            min(display.WIDTH - 1, _track[2] + pad),
+            min(display.HEIGHT - 1, _track[3] + pad))
 
 
 def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box):
@@ -421,37 +554,65 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box):
         band_y = (vy // display.BAND_H) * display.BAND_H
         win = dial.window(0, band_y, display.WIDTH, display.BAND_H)
         fb.blit(win, -rx, band_y - vy)
+    # the frost halo: the whole silhouette (bucket + body) drawn
+    # at the compass offsets in the flat halo colour, so the
+    # veiled body sits in a soft pale glow - the scattered-light
+    # edge of a figure behind frosted glass. Prepare-time only.
+    if _halo_r:
+        r = _halo_r
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r),
+                       (-r, -r), (r, -r), (-r, r), (r, r)):
+            _draw_bucket(views, _HALO_PALETTE, dx, dy)
+            _draw_body(views, fig,
+                       (HOME_FEET[0] + ox + dx,
+                        HOME_FEET[1] + oy + dy), bend, _HALO_PALETTE)
     # bucket at its home place, then the body at the grid point
-    _draw_bucket(views)
+    _draw_bucket(views, _pal)
     _draw_body(views, fig, (HOME_FEET[0] + ox, HOME_FEET[1] + oy),
-               bend)
+               bend, _pal)
     return bands
 
 
-def prepare(dial=None):
+def prepare(dial=None, frost=None):
     """Pre-composite the body rects (both poses x the snap grid)
-    over the current dial layer. Idempotent per dial: keyed on
-    the dial canvas + a pixel fingerprint, so a re-rendered dial
-    (face switch) rebuilds on the next call. Called explicitly
-    by the bench runner / boot flow after render_static(), and
-    lazily by draw()."""
-    global _rects, _prep_key, _track
+    over the current dial layer. Idempotent per dial + frost:
+    keyed on the dial canvas, a pixel fingerprint AND the frost
+    strength, so a re-rendered dial (face switch) or a frost
+    change rebuilds on the next call. Called explicitly by the
+    bench runner / boot flow after render_static(), and lazily
+    by draw().
+
+    frost: the frosted-glass strength 0..100 (the "frost"
+    config key); None keeps the current value. The palette and
+    halo radius for the strength are (re)derived on EVERY call,
+    cache hit or not, so draw()'s per-frame arms always match
+    the baked rects."""
+    global _rects, _prep_key, _track, _frost, _pal, _halo_r
     if dial is None:
         dial = display.dial()
-    key = (id(dial), _dial_fingerprint(dial))
+    if frost is not None:
+        if frost < 0:
+            frost = 0
+        if frost > 100:
+            frost = 100
+        _frost = int(frost)
+    _pal, _halo_r = _frost_state(_frost)
+    key = (id(dial), _dial_fingerprint(dial), _frost)
     if _rects is not None and _prep_key == key:
         return
     # content bboxes first: body per pose + bucket, measured at
-    # home by extent tracking (no drawing, no scratch canvas)
+    # home by extent tracking (no drawing, no scratch canvas);
+    # the pad leaves room for the halo pass around the shapes
+    pad = 2 + _halo_r
     fig = Figure()
     body_box = {}
     for name, bend in (("stand", 0.0), ("dip", 1.0)):
         _track = [9999, 9999, -9999, -9999]
-        _draw_body((), fig, HOME_FEET, bend)
-        body_box[name] = _padded_box()
+        _draw_body((), fig, HOME_FEET, bend, _RAW_PALETTE)
+        body_box[name] = _padded_box(pad)
     _track = [9999, 9999, -9999, -9999]
-    _draw_bucket(())
-    bucket_box = _padded_box()
+    _draw_bucket((), _RAW_PALETTE)
+    bucket_box = _padded_box(pad)
     _track = None
     rects = {}
     for name, bend in (("stand", 0.0), ("dip", 1.0)):
@@ -626,7 +787,11 @@ class Figure:
         point (framebuf->framebuf band blits, C), then the arms
         and the tool in the working hand - band-window polygons
         over the blit. Upper arm is the shirt sleeve, forearm and
-        hand are skin."""
+        hand are skin. Frost: a halo poly (segment widened by the
+        halo radius each side, flat frost colour) under each arm
+        segment, and every colour from the veiled palette
+        prepare() selected - at frost=0 the halo pass vanishes
+        and the palette is the raw one, so the frame is v2's."""
         prepare(self.dial)
         bands = _rects[pose["sprite"]][pose["snap"]]
         for win, y0 in canvas.band_windows():
@@ -634,22 +799,36 @@ class Figure:
             if hit is not None:
                 src, bx, by = hit
                 win.blit(src, bx, by)
-        # arms: upper = shirt sleeve, forearm = skin, hand a disc
+        # arms: [halo,] upper = shirt sleeve, forearm = skin,
+        # hand a disc - all in the current palette
+        pal = _pal
+        hr = _halo_r
         for side in ("l", "r"):
             sh = pose["shoulder_" + side]
             el = pose["elbow_" + side]
             ha = pose["hand_" + side]
+            if hr:
+                _band_poly(canvas, _seg_coords(sh[0], sh[1],
+                                               el[0], el[1],
+                                               11 + 2 * hr),
+                           FROST_HALO)
+                _band_poly(canvas, _seg_coords(el[0], el[1],
+                                               ha[0], ha[1],
+                                               9 + 2 * hr),
+                           FROST_HALO)
             _band_poly(canvas, _seg_coords(sh[0], sh[1],
-                                           el[0], el[1], 11), SHIRT)
+                                           el[0], el[1], 11),
+                       pal[_P_SHIRT])
             _band_poly(canvas, _seg_coords(el[0], el[1],
-                                           ha[0], ha[1], 9), SKIN)
-            _band_ellipse(canvas, ha[0], ha[1], 5, 5, SKIN)
-        # the tool in the working hand
+                                           ha[0], ha[1], 9),
+                       pal[_P_SKIN])
+            _band_ellipse(canvas, ha[0], ha[1], 5, 5, pal[_P_SKIN])
+        # the tool in the working hand (veiled like the rest)
         if pose["tool"] == "brush":
             hx, hy = pose["hand_r"]
             _band_poly(canvas, _seg_coords(hx, hy, hx - 4, hy - 13, 4),
-                       BRUSH_WOOD)
-            _band_ellipse(canvas, hx - 5, hy - 15, 3, 5, PAINT)
+                       pal[_P_WOOD])
+            _band_ellipse(canvas, hx - 5, hy - 15, 3, 5, pal[_P_PAINT])
         elif pose["tool"] == "cloth":
             hx, hy = pose["hand_l"]
-            _band_ellipse(canvas, hx, hy, 9, 7, CLOTH)
+            _band_ellipse(canvas, hx, hy, 9, 7, pal[_P_CLOTH])

@@ -164,11 +164,12 @@ def main():
 
     # 6. Dial layer, figure rects.
     face_name = cfg.get("face", "painter")
+    frost_now = cfg.get("frost", 55)
     face_mod = _face_module(face_name)
     face_mod.render_static(display.dial())
     print("main: dial rendered (face: %s)" % face_name)
-    figmod.prepare(display.dial())
-    print("main: figure prepared")
+    figmod.prepare(display.dial(), frost_now)
+    print("main: figure prepared (frost %s)" % frost_now)
 
     # 7. Admin + after-boot update check (flags only).
     admin.start()
@@ -224,11 +225,20 @@ def main():
             display.set_backlight(cfg["brightness"])
             if cfg.get("face", "painter") != face_name:
                 face_name = cfg.get("face", "painter")
+                frost_now = cfg.get("frost", 55)
                 face_mod = _face_module(face_name)
                 face_mod.render_static(display.dial())
-                figmod.prepare(display.dial())
+                figmod.prepare(display.dial(), frost_now)
                 drawn_total = None  # force a repaint
                 print("main: face changed to %s" % face_name)
+            elif cfg.get("frost", 55) != frost_now:
+                # frost only: the rects are re-baked with the new
+                # strength (prepare is keyed on it); the dial and
+                # the panel are untouched
+                frost_now = cfg.get("frost", 55)
+                figmod.prepare(display.dial(), frost_now)
+                drawn_total = None  # force a repaint
+                print("main: frost changed to %s" % frost_now)
 
         # Housekeeping, only while he is idle - never mid-show.
         if not show.running and \
