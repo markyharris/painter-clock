@@ -77,6 +77,27 @@ ROCK_AMP = 15             # px each way = one snap-grid step
 ROCK_CYCLE_MS = 4600      # dwell-shift-dwell-shift, ~4.6 s
 
 
+def _days_from_civil(y, m, d):
+    """Days since 1970-01-01 for a civil date (Hinnant's
+    algorithm) - pure arithmetic, no clock import: show.py
+    stays clock-free. update() builds the show machine's
+    DAY-EXTENDED total from it (v12): days * 1440 + minute of
+    day, which is monotonic across midnights within a run, so
+    tick()'s forward-only comparison keeps firing shows after
+    00:00. Minute-of-day alone wraps 1439 -> 0 - not greater
+    than the evening's last_total, and no later total ever is,
+    so before this fix no show fired again after the first
+    midnight until a reboot and the hands froze at 23:59."""
+    if m <= 2:
+        y -= 1
+    era = y // 400
+    yoe = y - era * 400
+    mp = m - 3 if m > 2 else m + 9
+    doy = (153 * mp + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
 def ease(p):
     if p < 0:
         p = 0
@@ -410,7 +431,8 @@ class Show:
         self.step_i = 0
         self.step_start = 0
         self.running = False
-        self.last_total = None   # last total-minutes accounted for
+        self.last_total = None   # last day-extended total-minutes
+                                 # accounted for (v12)
         self.frost_clear = 0.0   # cuckoo porthole (not in v1 shows)
         self.idle = None         # {"type","start","dur"}
         self.next_idle_at = None  # ms tick when a routine may start
@@ -564,7 +586,13 @@ class Show:
         overrides. Returns the figure pose used."""
         total = time_tuple[3] * 60 + time_tuple[4]
         self._sec = time_tuple[5]
-        self.tick(now_ms, total)
+        # the machine runs on the day-extended total (v12, see
+        # _days_from_civil): monotonic across midnights within
+        # the run. The tuple's date is the run's own clock, so
+        # the extension is consistent from the first frame on.
+        ext = _days_from_civil(time_tuple[0], time_tuple[1],
+                               time_tuple[2]) * 1440 + total
+        self.tick(now_ms, ext)
         # 1. the static dial layer
         if self.dial is not None:
             canvas.copy_from(self.dial)
@@ -595,8 +623,14 @@ class Show:
     # --- per-frame advance (no drawing) ---
 
     def tick(self, now_ms, total_minutes):
-        """Advance the machine and the figure. Call every frame."""
-        self._total = total_minutes
+        """Advance the machine and the figure. Call every frame.
+        total_minutes is the DAY-EXTENDED total (v12): the show
+        accounting (last_total, start_show) runs on it, so it
+        must be monotonic within the run - update() builds it
+        from the tuple's date. _total stays minute-of-day: the
+        sleep window, the watch routine and the idle status
+        clock all read time-of-day."""
+        self._total = total_minutes % 1440
         if self.next_idle_at is None:
             self.next_idle_at = now_ms + IDLE_FIRST_MIN \
                 + random.randint(0, IDLE_FIRST_RAND)
