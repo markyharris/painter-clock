@@ -1,0 +1,570 @@
+# Painter Clock — SPEC
+
+A desktop clock after Maarten Baas's Schiphol Clock: a little man in blue
+overalls stands behind a frosted round dial and, every minute, wipes the
+old minute hand away and paints the new one. MicroPython port of the web
+prototype (Space `wipe-and-paint-prototype`) to a Waveshare round
+ESP32-S3 display board.
+
+Status: **groundwork** (Fri Nov 13, 2026). Hardware ordered, arrives
+Sun Nov 15. The animation engine is NOT written yet — this spec, a
+compiling skeleton, and the driver research below are the running start
+for Sunday.
+
+---
+
+## 1. Hardware
+
+Both candidate boards are the same platform; either runs this design
+unchanged. Mark ordered one of them (the 2.8C was last discussed).
+
+| | ESP32-S3-Touch-LCD-2.1 | ESP32-S3-Touch-LCD-2.8C |
+|---|---|---|
+| MCU | ESP32-S3R8, 240 MHz | ESP32-S3R8, 240 MHz |
+| Flash / PSRAM | 16 MB / 8 MB OPI | 16 MB / 8 MB OPI |
+| Panel | 2.1" round IPS, 480×480 | 2.8" round IPS, 480×480 |
+| LCD controller | ST7701, 16-bit RGB (DPI) + 3-wire SPI init | ST7701, same arrangement |
+| Touch | CST820 (I2C) | GT911 (community template) — confirm Sunday |
+| RTC | PCF85063 (I2C) | PCF85063 (expected) — confirm Sunday |
+| IO expander | TCA9554 @ I2C 0x20 | TCA9554 @ I2C 0x20 |
+| Also onboard | QMI8658 IMU, TF slot, buzzer, battery charger | same class |
+| USB | USB-C (native USB + CH343P UART bridge on the 2.1) | USB-C |
+
+Panel facts that shape the whole port (Waveshare 2.1 wiki):
+
+- The panel is a **parallel RGB (DPI) panel**, not SPI. Pixel data is
+  streamed continuously by the ESP32-S3's RGB LCD peripheral from a
+  framebuffer in PSRAM. There is no "send this frame" command in the
+  SPI-panel sense; whoever owns the framebuffer owns the picture.
+- The ST7701 still needs a vendor init sequence, sent over a 3-wire SPI
+  side channel before the RGB stream starts. On the 2.1 that side
+  channel is GPIO1 (SDA) / GPIO2 (SCL), with CS on the IO expander
+  (EXIO3) and panel reset on EXIO1. Backlight is GPIO6.
+- RGB pin map (2.1, from the wiki): PCLK 41, DE 40, VSYNC 39, HSYNC 38;
+  R1–R5 = 46, 3, 8, 18, 17; G0–G5 = 14, 13, 12, 11, 10, 9;
+  B1–B5 = 5, 45, 48, 47, 21 (RGB565; R0/B0 not connected).
+- Shared I2C bus for touch / RTC / IMU / expander: SDA GPIO15,
+  SCL GPIO7 (2.1 wiki; the 2.8C community template uses the same pair).
+- Community C projects run the panel at ~18 MHz pixel clock with
+  ESP-IDF "bounce buffers" (a small internal-RAM strip buffer) to keep
+  the picture steady while Wi-Fi is busy.
+
+The clock needs no touch, no IMU, no buzzer. Touch is noted only
+because the two boards differ (CST820 vs GT911) if we ever want a
+tap-to-wake; nothing in v1 depends on it.
+
+---
+
+## 2. Display driver research (Nov 13, 2026) — the honest picture
+
+**Headline: stock MicroPython cannot light this panel.** Every route
+below ends at a *custom firmware build*; none is a `.py` file we can
+drop onto the v1.29 GENERIC_S3-SPIRAM_OCT image Mark flashes with
+Thonny today. Sunday's first job is picking and proving one route.
+All of the Python code in this repo is written against the
+`display.py` contract (section 6) precisely so the choice can be made
+on the bench without touching the animation code.
+
+1. **Stock MicroPython v1.29 GENERIC_S3-SPIRAM_OCT — no.**
+   Mainline MicroPython has no RGB/DPI LCD driver and no ST7701
+   module; `framebuf` exists but nothing in the stock build feeds a
+   parallel panel. Waveshare's own wiki for the 2.1 lists exactly two
+   supported frameworks — **Arduino IDE and ESP-IDF** — and offers no
+   MicroPython firmware or examples for the board.
+
+2. **Espressif ESP32_Display_Panel — the official route (primary plan).**
+   Espressif's display library explicitly supports MicroPython through
+   an `mpy_support/` directory and a `micropython.cmake`: it is a C
+   component compiled *into* a custom MicroPython firmware. Its
+   supported-board list names **both** the ESP32-S3-Touch-LCD-2.1 and
+   the ESP32-S3-Touch-LCD-2.8C, and its controller list includes the
+   ST7701 and CST820. No prebuilt firmware download was found — plan
+   on building firmware once (ESP-IDF toolchain, Docker image is the
+   tidy way), then treating that `.bin` as this project's standard
+   image, exactly like the stock `.bin` is for the other Micro builds.
+   What its MicroPython binding exposes (class names, whether we get a
+   raw framebuffer or an LVGL surface) was not documented in what we
+   could read from here — **Sunday question #1**.
+
+3. **lvgl_micropython (the LVGL-org MicroPython) — possible, riskier.**
+   A custom firmware whose `lcd_bus.RGBBus` drives RGB panels from
+   Python. Its supported-chip list marks **ST7701S "WIP"**, and a
+   recent (Oct 2026) issue against a sibling Waveshare RGB board shows
+   the failure mode to expect: without bounce buffers the driver
+   copies the full ~1.2 MB frame through PSRAM every frame and the
+   picture can shake/tear while Wi-Fi runs; a community patch adds
+   `bounce_buffer_lines=10` to `lcd_bus.RGBBus`. Viable fallback, but
+   expect to carry a patched firmware.
+
+4. **lbuque/lcd_binding_micropython — possible, more porting.**
+   A thin C binding over `esp_lcd` supporting ST7701 and DPI/RGB,
+   modelled on `st7789_mpy`'s API. Documented boards are LILYGO
+   (T-DisplayS3, T-RGB); the Waveshare pin maps and expander handling
+   would be ours to port. Also a custom firmware build.
+
+5. **CircuitPython — works today, wrong ecosystem (noted, not planned).**
+   CircuitPython has official board support for the 2.1 with
+   `board.DISPLAY` ready at boot. Everything else in Mark's Micro
+   fleet — updater, provisioning, Thonny workflow — is MicroPython,
+   so this stays a fallback data point only.
+
+Sources: Waveshare ESP32-S3-Touch-LCD-2.1 wiki (frameworks, pin maps);
+Espressif ESP32_Display_Panel repo + ESP Component Registry listing
+(MicroPython support, board/controller lists); lvgl_micropython repo
+and its issue #610 (RGBBus bounce buffers, ST7701S WIP);
+lbuque/lcd_binding_micropython repo; circuitpython.org board page for
+the 2.1; community C references for panel timing (stefankn's
+esp32-s3-lcd-2.8c-template; murr2k's esp32-s3-touch-lcd-2.1 demos).
+
+### Only the hardware can settle these (Sunday list)
+
+- Which firmware route actually initialises THIS panel, and what its
+  Python API hands us (raw RGB565 framebuffer? LVGL only?).
+- The 2.8C's exact RGB pin map, ST7701 init side-channel pins, and
+  touch chip — from its wiki/schematic, then proven on the bench.
+- Whether our Python `framebuf` can *be* the panel's scanout buffer,
+  or the C driver keeps its own and we pay a full-frame copy per
+  frame (460,800 bytes at 480×480×2 — the difference between easy
+  20 fps and a fight).
+- Real frame rate for a full Python redraw at 480×480, and whether
+  bounce buffers are in play. The show is mostly stillness with ~4 s
+  of motion a minute, so even 12–15 fps during shows is acceptable —
+  but it must not tear.
+- PCF85063 present and at I2C 0x51 on the unit that arrives.
+
+### Firmware build outcome — Nov 14, 2026 (appended)
+
+The custom-firmware route **built successfully**. MicroPython v1.29.0
++ ESP-IDF v5.5.2 (the panel doc's pinned IDF v5.2.2 is stale; MP
+v1.29 supports IDF v5.3–v5.5.4) + ESP32_Display_Panel v1.0.5, using
+the library's own board definition for this exact board
+(`BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_2_8_C` — ST7701/RGB pin map,
+init sequence, GT911, TCA9554 all match §1). Artifact:
+`firmware/painter-firmware.bin`, a combined image flashable at 0x0
+(16 MB layout: factory app 4 MiB @0x10000, FAT vfs ~12 MiB
+@0x410000). Full recipe, failure history, and API:
+`firmware/API_NOTES.md` and `firmware-build/build_log.md`.
+
+The Python API is `from esp_panel import Board` with
+`init()/begin()/deinit()/color_bar_test()` — and a catch the research
+above predicted: **upstream's binding exposes no pixel pushing at
+all**. The binding in our build is extended (in the library clone's
+`mpy_support/esp_panel_mp_board.cpp`, marked "Painter Clock
+additions") with the three methods display.py needs, wrapping the
+C++ `drawBitmap` / `getFrameBufferByIndex` / backlight APIs:
+
+- `draw_bitmap(x, y, w, h, buf) -> bool` — RGB565 buffer, the
+  guaranteed-correct copy path.
+- `frame_buffer_addr() -> int` — address of the driver's frame
+  buffer 0 for the zero-copy path
+  (`uctypes.bytearray_at(addr, 460800)` + `framebuf.FrameBuffer`).
+- `set_backlight(level) -> bool` — 0..255.
+
+Two build gotchas worth remembering: (1) the libraries must be
+integrated as plain IDF components, not usermods — MicroPython's
+QSTR scan runs every usermod source through one shell command and
+the stock build already sits within ~2 KB of the kernel's
+128 KiB argument cap; the build also has to run through a `/fb`
+bind mount of the tree for the same reason (recipe in API_NOTES).
+(2) The upstream doc's step of copying esp_lcd headers into
+mpy_support must be skipped on IDF 5.5 — `#pragma once` makes the
+copies double-define against the real headers.
+
+Still open (bench only, added to the Sunday list above): whether
+`begin()` lights this panel as configured (first test:
+`color_bar_test()`), and whether direct writes to
+`frame_buffer_addr()` reach the screen without a flush or whether
+frames must go through `draw_bitmap`.
+
+---
+
+## 3. The animation system
+
+Canvas is 480×480, centre (240, 240). Everything is drawn, nothing is
+video. One parameter — **stroke progress** `p` ∈ [0, 1] — drives each
+wipe/paint: the revealed fraction of the hand, the brush/cloth tip
+position, and (through the tip) the figure's arm pose and body
+position all derive from the same `p`, so they cannot drift apart.
+
+### 3.1 The minute show (~4.0 s; ~5.2 s when the hour hand moves)
+
+Timings are the prototype's, in milliseconds. The show runs once per
+minute, on the minute.
+
+| Step | Dur | What happens |
+|---|---|---|
+| glance | 300 | He notices. Head tilts toward the minute hand; body starts stepping toward the work (follow 0.35). |
+| wipe (minute) | 950 | Cloth follows the OLD minute angle tip→centre; the hand un-reveals segment by segment behind the cloth. |
+| wipe (hour) | 600 | Only when the hour hand steps (every 12 min): same, for the hour hand. |
+| dip | 1050 | Step toward the bucket (follow 0.30), bend at the waist — fold in over 0–32%, **hold** the stoop 32–68% with two brush dabs (dabbing across 38–68%), straighten 68–100%. Bend peaks at ~1.02 rad (~58°) with a ~14 px crouch (480-scale). |
+| paint (hour) | 650 | Only when the hour hand steps: brush paints the new hour angle centre→tip. |
+| paint (minute) | 1150 | Brush paints the new minute angle centre→tip; hand reveals behind the brush. |
+| inspect | 520 | Step back toward home (follow 0.05), head tilt, small nod. Show over. |
+
+Sequence order: glance → wipe minute → wipe hour (if due) → dip →
+paint hour (if due) → paint minute → inspect. (The prototype builds
+the step list in exactly this order.)
+
+### 3.2 Hands
+
+- Minute hand length 163 px, hour hand 108 px (480-scale).
+- Drawn in **14 segments**. Reveal fraction = stroke progress; the
+  frontier segment is drawn partially. Segment width tapers
+  `1 − 0.45·f` along the hand.
+- **Fixed wobble:** each segment is offset perpendicular to the hand
+  by `sin(f·22)·a` where `f` is the fraction along the hand and `a`
+  the wobble amplitude (1.6 px at prototype scale ≈ 0.9 px at 480 —
+  sub-pixel in RGB565, so use `a` ≈ 1.5–2 px on-device; tune on the
+  panel). Same wobble every time = his "handwriting".
+- Centre boss: filled circle, radius ≈ 0.85 × hand width.
+- **The hour hand moves in 6° steps every 12 minutes**, not
+  continuously — that's when its wipe/paint runs. On the hour both
+  hands are wiped and repainted (and see §3.4).
+- **No second hand.** By design — he couldn't keep up, and the concept
+  is truer without one.
+
+### 3.3 The figure rig (480-scale numbers)
+
+Prototype geometry scaled by 480/880 = 0.5455. All values in pixels,
+origin top-left, y down.
+
+| Quantity | Value |
+|---|---|
+| Home feet position | (240, 446) |
+| Shoulder height above feet | 152 → home shoulder ≈ (244, 294) |
+| Head centre height above feet | ≈ 199 → home head ≈ (240, 247) |
+| Bucket position | (332, 436) (92 right of home feet, 10 above) |
+| Shoulder x clamp | home ± 106 |
+| Hip pivot height above feet | ≈ 81 (bend rotates torso+head about this) |
+| Arm bones | upper 48, forearm 47 — total reach 95, clamped to 93 |
+| Blur (prototype) | figure rendered offscreen, composited at ~3.5/880 ≈ 2 px blur, alpha 0.95 |
+
+**Body-follow.** The figure does not stand still and stretch. A
+desired shoulder point is computed each frame as
+`home + (activeTip − home) × follow`, with `follow` per phase
+(glance 0.35, wipe/paint 0.68, dip 0.30 toward the bucket, inspect
+0.05). The actual shoulder eases toward the desired point with an
+exponential lag (time constant τ per phase: glance 300 ms,
+wipe/paint 170 ms, dip 200 ms, inspect 320 ms, idle default 380 ms).
+Feet follow the shoulder (he steps), clamped inside the dial, with a
+small stepping bob while moving.
+
+**Two-bone IK.** Shoulder S, target T (brush or cloth tip). With bone
+lengths L1=48, L2=47: clamp |ST| to ≤ 93; standard cosine-rule elbow;
+choose the elbow solution that scores best on (lower elbow preferred,
+slight outward bias) — the prototype's scoring is
+`elbow.y + 0.15·|elbow.x − CX| + 0.1·(side-signed x)`. Because the body
+follows the tip, the residual reach after following is ~76 px worst
+case (12 o'clock tip) — comfortably inside 93, so the elbow always
+keeps a natural bend and the arm never changes length.
+
+**Poses per phase** (all derived, none keyframed by hand):
+- *Idle:* arms hang, breathing sway (slow ±1 px vertical bob of the
+  whole figure), occasional weight shift.
+- *Glance:* head tilt toward the active tip, proportional to its
+  horizontal offset.
+- *Wipe:* cloth hand at the frontier point of the old hand
+  (`tip(angle, reveal, len)`); brush hand hangs.
+- *Dip:* torso/head group rotates about the hip pivot by
+  bend × 1.02 rad, plus crouch; brush hand targets inside the bucket;
+  the bend envelope is fold-in / hold / straighten (never a sine
+  hump — a peaked-for-an-instant bend reads as no bend; that lesson
+  is already paid for). Cloth hand braces on his knee at full bend —
+  the old side-hang target is outside the fixed arm's reach there.
+- *Paint:* brush hand at the frontier point of the new hand.
+- *Inspect:* both hands down, slight backward step, head nod
+  (two small dips).
+
+### 3.4 The hourly ritual — "cuckoo" (PROTOTYPE-PENDING)
+
+Designed Nov 13 at Mark's request; a prototype edit is landing in
+parallel, so timings/details below are the design intent and get
+reconciled with the prototype before the port hardens.
+
+On the hour, after both hands have been wiped and repainted:
+
+1. He steps to centre, below the hub, and **leans his head in toward
+   the glass** (~1 s) — head and shoulders come forward, scaling up
+   slightly as if closer to the viewer.
+2. With the cloth he **wipes a clear circle in the frost** centred on
+   his face: a small circular wiping motion (~1–1.5 s) opens a
+   porthole roughly face-sized (design target ≈ 96 px diameter at
+   480-scale).
+3. **His face is briefly visible in focus** through the cleared
+   circle (~1.2 s hold) — the one moment in the hour he is sharp
+   instead of a frosted blur. A nod or a blink here is prototype
+   tuning, not spec.
+4. **The frost creeps back** (~1.5 s): the circle clouds over from
+   the rim inward until the glass is uniform again.
+5. He steps back to home and resumes — idle, until the next minute
+   show. Total added time ≈ 4–5 s, once an hour.
+
+Rendering consequences are in §4.3. Like the driver, this is marked
+prototype-pending: the S3 implementation follows whatever the
+prototype settles on.
+
+### 3.5 Idle routines
+
+Between shows he is alive but quiet. Routines fire at random
+intervals (prototype: weighted random pick when idle long enough);
+durations from the prototype:
+
+| Routine | Dur (ms) | Notes |
+|---|---|---|
+| wristwatch check | 2100 | The man inside the clock checks the time. |
+| brow wipe | 2100 | Back of the cloth hand across the forehead. |
+| shoulder roll | 2100 | Both shoulders, one slow roll. |
+| mug sip | 2100 | Mug appears from beside the bucket; sip; gone. |
+| cap-off forehead wipe | 4000 | Held phases: grab cap 0–.22, lift clear .26–.42, hold cap at his side (hair visible, brush hidden — that hand holds the cap), cloth hand makes two forehead passes, cap back on. |
+| hanky nose-blow | 3600 | Cloth becomes the hanky: up to the nose, head dip, **two** short blows (hanky puffs/bobs with each), final dab. |
+
+Every idle target is checked against the same fixed arm reach — the
+prototype hand-verified each routine's extremes stay inside it, and
+the port keeps that rule: no pose may ask the arm to stretch.
+
+---
+
+## 4. Rendering strategy (ESP32-S3)
+
+### 4.1 Framebuffer
+
+One full framebuffer, 480×480 RGB565 = **460,800 bytes**, allocated
+in PSRAM (`display.py` owns it). The S3R8 has 8 MB PSRAM; one buffer
+is comfortable, two (921,600 B) are affordable if the chosen driver
+wants double buffering — but see the copy-cost warning in §2: whether
+our buffer can be the scanout buffer is a Sunday measurement, not an
+assumption.
+
+Dial, figure and hands are composited into this buffer in Python with
+`framebuf` primitives plus our own polygon/line code (`clockface.py`,
+`figure.py`). No per-frame blur, no per-frame alpha over the full
+screen — both are far too slow in interpreted Python at 480×480.
+
+### 4.2 The frosted-glass figure without per-frame blur
+
+The prototype blurs the whole figure every frame (canvas filter).
+The port bakes the blur in, in three parts:
+
+- **Body sprite, pre-blurred.** The figure's body (overalls, legs,
+  head, cap) is drawn once — either at first boot or, better,
+  generated on the desktop and shipped as sprite data — then blurred
+  ONCE with a small box blur (radius ≈ 2 px at 480) and stored as an
+  RGB565 sprite with a transparent key colour. Each frame it's a
+  plain keyed blit (per the standing lesson: **plain keyed blits
+  only — framebuf palette blits draw nothing on v1.29 ESP32**).
+  Body movement (stepping, leaning, bob) is just the blit position;
+  the bend is the one hard case — see below.
+- **Arms drawn soft, not blurred.** The arms move every frame, so
+  they are drawn per-frame as tapered polygons in the body's blue
+  with slightly soft (pre-blended edge) colours — at 2 px of intended
+  blur, a 1 px mid-tone edge reads the same from arm's length. The
+  brush and cloth are small sprites, also pre-blurred.
+- **The bend.** Rotating a pre-blurred sprite per frame is not
+  available in `framebuf`. Options, in order of preference:
+  (a) pre-render the torso+head sprite at a handful of bend angles
+  (e.g. 0°, 15°, 30°, 45°, 58°), each pre-blurred, and pick/blend by
+  nearest angle during the 1.05 s dip — five small sprites, cheap;
+  (b) draw the torso as polygons per frame like the arms.
+  The skeleton assumes (a) — `figure.py` exposes pose angles and a
+  TODO marks the sprite set as a Sunday decision once frame rate is
+  known.
+
+### 4.3 Frost layer and the cuckoo porthole
+
+The dial's default state IS the frost: the figure is behind frosted
+glass at all times (§4.2's blur is the frost). The hourly ritual
+needs a *clearer-than-default* hole, so it is implemented as a
+regional effect, never a full-screen pass:
+
+- A **frost overlay patch**: a pre-rendered frost-texture buffer the
+  size of the porthole's bounding square (≈ 110×110 px at 480).
+- During the ritual, only that patch is recomposited per frame:
+  draw the sharp scene into the patch (dial + **in-focus face
+  variant** of the figure sprite — a second, unblurred head/face
+  sprite, shipped alongside the blurred set), then blend the frost
+  texture back over it with a circular mask whose radius/opacity
+  follows the wipe/clear/creep envelope.
+- Per-frame cost is bounded by the patch (~12k pixels), trivial next
+  to a full frame. The mask is applied per scanline (circle spans
+  precomputed), the same trick the hand segments use.
+- The face variant is the only sharp artwork in the project; it
+  exists only inside the porthole and only during the ritual.
+
+### 4.4 Frame loop and performance posture
+
+- Target: redraw at ~20 fps during shows/idle routines, drop to a
+  near-static 1 fps (breathing bob only — in practice redraw on bob
+  phase steps) when nothing is happening. A clock that is still 56 s
+  of every minute should not burn the panel or the CPU.
+- Optimisation ladder if full redraws are too slow (measure Sunday):
+  (1) pre-rendered static dial layer blitted first each frame
+  (already the plan); (2) dirty-rectangle redraws around the figure
+  and the active hand only; (3) fewer, larger animation steps during
+  wipe/paint (the segment reveal tolerates 8–10 fps gracefully);
+  (4) move the figure blit + hand drawing into the driver's LVGL
+  surface if the firmware route forces LVGL (last resort — the
+  drawing code is deliberately driver-shaped to make this possible).
+
+---
+
+## 5. Timekeeping
+
+- **NTP first:** after Wi-Fi joins, `ntptime.settime()` (stdlib),
+  re-sync every 6 h and after any Wi-Fi reconnect. Mark is in
+  America/Phoenix — UTC−7 year-round, no DST — so local time is a
+  fixed offset from `config.json` (`tz_offset_h`, default −7); no
+  tz database needed.
+- **PCF85063 RTC as the fallback and the boot source:** the RTC is on
+  the shared I2C bus (addr 0x51). A tiny pure-Python driver
+  (`timekeep.py`, ~40 lines of BCD register reads/writes — well
+  inside stdlib `machine.I2C`) reads it at boot *before* Wi-Fi, so
+  the clock shows the right time from the first frame; every
+  successful NTP sync writes the RTC back. If Wi-Fi is down at boot,
+  he paints RTC time and corrects himself when the network returns.
+- The internal `machine.RTC` is set from whichever source wins, and
+  the show scheduler keys off it: a show is due when the minute
+  changes; the hour ritual when the hour changes.
+
+---
+
+## 6. Code layout and the display contract
+
+```
+main.py       boot, Wi-Fi, time, scheduler, admin — the conductor
+display.py    THE DRIVER SEAM. Only file that knows the firmware route.
+clockface.py  dial layer + hand drawing (segments, wobble, reveal)
+figure.py     rig math (follow, IK), pose computation, sprite blits
+show.py       choreography state machine (shows, idles, cuckoo ritual)
+timekeep.py   NTP + PCF85063
+prov.py       rehoming: setup-AP captive portal (PainterClock-Setup)
+updater.py    GitHub update check/apply (blob-SHA verified)
+admin.py      port-80 admin page (started by main.py)
+wifi_cfg.py   SSID/PASSWORD — board-local, NEVER in the update list
+config.json   board-local settings, NEVER in the update list
+update_files.txt  the updater manifest, read fresh on every check
+```
+
+`display.py` contract — the rest of the code uses only this:
+
+```python
+WIDTH = HEIGHT = 480
+def init() -> bool          # panel up, backlight on; False = no driver
+def framebuffer()           # framebuf.FrameBuffer, RGB565, ours to draw in
+def show()                  # present the framebuffer (driver-dependent)
+def set_backlight(level)    # 0..255 (night mode)
+def is_live() -> bool       # False while the stub is in place
+```
+
+While the stub is in place (until Sunday), `init()` returns False,
+drawing still runs against a PSRAM buffer, and `main.py` serves the
+admin page and logs "no display driver yet" — so every non-display
+path (Wi-Fi, provisioning, updater, admin, timekeeping, the whole
+state machine) can be exercised in Thonny before the panel lights.
+
+---
+
+## 7. Mark's standing build rules, baked in
+
+Same machinery as LS Lite Micro / metar-micro, same file names and
+behaviour, so this device is operated like the others:
+
+1. **Rehoming (`prov.py`).** Holding BOOT *just after* power-up
+   (never during plug-in — that is download mode on the S3) — or
+   booting with no usable credentials — drops the join and starts
+   the `PainterClock-Setup` access point with a captive portal
+   (DNS redirect to 192.168.4.1, network scan + pick-or-type SSID,
+   show-password peek). Saving writes **only** `wifi_cfg.py` and
+   reboots. Pattern copied from metar-micro's `prov.py`.
+2. **Update-available (`updater.py`).** Git-less self-update against
+   this project's GitHub repo: after boot and then hourly, fetch
+   `update_files.txt` **fresh from the repo** (built-in list is only
+   a fallback — a frozen list stranded a module once), compare each
+   listed file's git blob SHA with GitHub's, and **only flag**
+   "Update available" in the admin page. Install happens only when
+   Mark presses **Update now**: download each changed file, verify
+   its blob SHA, swap in with `.bak` kept, reboot. `wifi_cfg.py` and
+   `config.json` are never in the manifest.
+3. **Admin page (`admin.py`, port 80).** Status (time source, Wi-Fi,
+   update flag), settings (tz offset, night mode — see open
+   questions), Update now, Rehome instructions, Restart. Mirrors the
+   other builds' admin shape.
+
+Repo: to be created by Mark (the GitHub integration can't create
+repos). `updater.py` carries `GITHUB_REPO = "markyharris/painter-clock"`
+as a **placeholder** until he names it — see open questions.
+
+---
+
+## 8. Open questions for Mark
+
+1. **GitHub repo name** — `markyharris/painter-clock`? He creates the
+   repo himself; the updater placeholder gets corrected to match.
+2. **Night mode, 22:00–06:00** (the ticker dims then): dim the
+   backlight (to what — the ticker's 25%?), and does he slow down /
+   skip idle routines at night, or paint on as usual, just dimmer?
+   Does the cuckoo ritual still run at night?
+3. **Face details** — ticks only (the prototype's current look), or
+   faint numerals? Hand colour/weight are tuned on the panel, but
+   ticks-vs-numerals changes the pre-rendered dial.
+4. **Which board actually arrives** — 2.1 or 2.8C? Same code either
+   way; the bring-up checklist has one branch (touch chip / pin map
+   confirmation) that depends on it.
+5. **Cuckoo ritual tuning** — once the prototype version lands:
+   porthole size, how long his face stays clear, nod/blink or
+   straight-faced?
+
+---
+
+## 9. What "done" looks like on Sunday
+
+Firmware route chosen and panel lit → first frame from
+`clockface.py` → the minute show running at an acceptable frame
+rate → NTP + RTC agree → provisioning round-trip (forget Wi-Fi,
+rejoin via PainterClock-Setup) → updater check against the real
+repo flags clean. Then, and only then, the animation engine gets
+built out for real. See README.md for the step-by-step checklist.
+
+---
+
+## Addendum — Nov 13, 2026 (Mark's night-mode decision)
+
+Mark settled the §8 night-mode question with a better idea than dimming: for the hours set in the admin (start/end), the little room's light goes off — the scene darkens — and the painter lies down and sleeps, Zzz drifting up from him, while the clock keeps telling time (hands still advance; no paint show while he sleeps). The prototype is implementing this first (admin-set hours on the prototype's panel); the port follows the prototype's final behaviour. Remaining detail for the port: whether he wakes for the on-the-hour cuckoo moment during sleep hours (prototype behaviour governs).
+
+## Credit (required, standing)
+
+The admin page carries a credit line: an homage to **Maarten Baas** and his **Schiphol Clock** (Amsterdam Airport Schiphol, 2016), from the *Real Time* series. Added to admin.py's page footer Nov 13, 2026 at Mark's request — keep it in any rewrite of the admin page.
+
+## Board CONFIRMED — Nov 13, 2026
+
+Mark confirmed the ordered board (arriving Sun Nov 15): **Waveshare ESP32-S3-Touch-LCD-2.8C** — https://www.waveshare.com/esp32-s3-touch-lcd-2.8c.htm
+Verified from the product page (read Nov 13): ESP32-S3R8, 16MB flash, 8MB PSRAM; 2.8in IPS 480x480, RGB interface, **ST7701** driver; touch **GT911** over I2C; **PCF85063 RTC** onboard (matches timekeep.py's plan); TCA9554PWR GPIO expander; QMI8658 6-axis IMU; TF slot; CH343P USB-UART; buzzer; MX1.25 battery header. This closes §8 question 4: it is the 2.8C, not the 2.1 — same 480x480 canvas the port numbers assume; touch chip is GT911 (only relevant if touch is ever used; the design does not need it). Sunday bring-up still starts with the firmware question (ESP32_Display_Panel mpy_support route).
+
+## Board ARRIVED + factory demo verified — Nov 14, 2026
+
+The 2.8C arrived a day early (Sat Nov 14, not Nov 15). Mark powered it on USB-C and the factory demo (an LVGL "Onboard" test app) runs: panel lights evenly, backlight slider works, touch responds (he scrolled the page), QMI8658 IMU reports live angular deflection, the PCF85063 RTC is alive (counting up from the 1970 epoch, unset), wireless scan found Wi-Fi/BLE devices, and the demo reports **Flash Size 16 MB** as spec'd. Panel, backlight, expander and touch are therefore proven good before any of our firmware touches the board — bring-up checklist steps 1–2 done.
+
+Waveshare's demo package (ESP32-S3-Touch-LCD-2.8C-Demo.zip, downloaded Nov 14) contains only Arduino and ESP-IDF examples plus a single full-flash factory image — **no MicroPython firmware for this board exists from Waveshare**, and none was found elsewhere (CircuitPython covers only the non-C 240x320 namesake). The factory restore image is saved at `factory/ESP32-S3-Touch-LCD-2.8C-factory.bin` (16 MiB, flash at 0x0 to return the board to as-shipped state). The firmware route therefore stands as §2's primary: a custom MicroPython build with Espressif's ESP32_Display_Panel (mpy_support). Buster takes the first build attempt on the VM; Mark's next bench session starts by flashing the resulting image (Thonny 5, family ESP32-S3, address 0x0).
+
+---
+
+## Addendum — Nov 15, 2026 (display architecture + multi-face)
+
+**Display route: BENCH-PROVEN and implemented.** The Nov 15 bench session (full results in `firmware/API_NOTES.md`) settled §2's open questions the hard way: v2 firmware lights the panel (`init()`/`begin()`/`color_bar_test()` all True, colour bars photographed), but **large single transfers wedge the chip hard** — a full-size `framebuf.FrameBuffer`, writes via `frame_buffer_addr()`, and a single full-frame `draw_bitmap` (460,800 B) each hang it past Ctrl-C, reset required. What works instantly: `draw_bitmap` of a 100×100 tile and of a 480×120 band (115,200 B), and sustained animation of full frames shipped as **4 bands of 120 lines** (6-frame red/blue flip test, clean). The cliff sits between 115 KB and 460 KB; the design stays at the proven size.
+
+`display.py` is therefore built as:
+
+- **Two plain-bytearray canvases** (frame + pre-rendered static layer, 460,800 B each in PSRAM), drawn through a `Canvas` class implementing the framebuf-style methods the project uses (`fill`, `pixel`, `fill_rect` via row-pattern slice writes, `line` Bresenham, filled `ellipse` via row spans, opaque `blit` via per-row slice copies). **No full-size FrameBuffer anywhere; `frame_buffer_addr()` is never called.**
+- **`show()`** ships the frame canvas with 4 `draw_bitmap` calls of 480×120, memoryview slices — no copies.
+- **Keyed sprite blits** (`display.blit_sprite`): per-row, only opaque runs are slice-copied (plain keyed blits per the standing lesson — framebuf palette blits draw nothing on v1.29 ESP32).
+- **Stride-window helper** (`Canvas.window(x, y, w, h)`): a real `framebuf.FrameBuffer` over a memoryview window of the canvas with stride 480, for code needing genuine framebuf primitives over a bounded region (a hand's bounding box, text). **Hard cap: spanned bytes ≤ 115,200** (the proven band size); it raises past the cap.
+- §6's contract is revised accordingly: `display.framebuffer()` survives as a compat alias but returns the frame **Canvas**, not a FrameBuffer. `init()` still returns False (canvases usable) when the driver is absent, so headless Thonny runs still work.
+
+One drawing fix from desk tests the same day: `clockface.thick_line` now stamps filled discs along the segment — the skeleton's parallel-offset-lines version left a pinhole moiré on diagonals after int() rounding. Hands are solid at any angle.
+
+**First frame:** `bench_first_frame.py` (Thonny bench runner, no Wi-Fi/updater/admin) renders the dial and composes one frame with the hands at **10:09 — a fixed demo time**, labelled as such in the file; real timekeeping arrives with `timekeep.py` in the main path.
+
+**Multi-face decision (Mark, Nov 15):** the clock ships **multiple selectable faces**, the painter as flagship/default. The plumbing is face-generic from now on:
+
+- A face is a module exposing **`render_static(canvas)`** (draw the static layer once into `display.dial()`) and **`compose(canvas, time_tuple, state=None)`** (copy the static layer in, draw what moves). `clockface.py` is the painter face (`NAME = "painter"`); future `face_classic.py` (classic analog) and `face_digital.py` plug into the same display layer with **no display.py changes**.
+- Selection is the **`face` key in admin config** (`admin.py` DEFAULT_CONFIG, default `"painter"`; options painter/classic/digital). Switching faces re-renders the static layer once; per-frame cost is one canvas copy plus the face's own drawing.
+- Headroom is ample: the two canvases total ~0.92 MB of 8 MB PSRAM and the filesystem has ~12 MB — and the painter (sprites, figure, shows) is the most expensive face by far; classic and digital are strictly cheaper. `bench_first_frame.py` already reads the `face` key and falls back to the painter for unbuilt faces; main.py adopts the same selection when its compose loop moves to the face API.
