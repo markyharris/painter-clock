@@ -23,7 +23,18 @@
 import json
 import socket
 
+import show as showmod
 import updater
+
+# Idle-routine Try-it buttons (idle life v1, Nov 15, 2026):
+# (routine name in show.IDLE_DUR, button label). A press queues
+# the routine in the app dict ("tryit"); main.py hands it to
+# show.queue_idle(), and it runs at the next safe gap.
+TRYIT = (("watch", "Wristwatch check"), ("cap", "Cap-off brow wipe"),
+         ("sip", "Mug sip"), ("scratch", "Head scratch"),
+         ("rear", "Rear scratch"), ("apple", "Apple snack"),
+         ("hanky", "Hanky nose-blow"), ("phone", "Phone call"),
+         ("plane", "Plane flyby"), ("shoulder", "Shoulder roll"))
 
 DEFAULT_CONFIG = {
     # Clock face module (SPEC Nov 15 addendum): "painter"
@@ -89,6 +100,14 @@ def _face_options(current):
     return out
 
 
+def _tryit_buttons():
+    out = ""
+    for name, label in TRYIT:
+        out += '<button name="routine" value="%s">%s</button> ' \
+            % (name, label)
+    return out
+
+
 def _page(app):
     u = updater.STATE
     upd = "UPDATE AVAILABLE (%d file(s))" % u["files"] \
@@ -117,6 +136,8 @@ Lights out - he sleeps</label> from
 <i>The sleep behaviour arrives in the next build; the hours are
 saved now so they're ready.</i></p>
 <p><button type="submit">Save settings</button></p></form>
+<h3>Idle routines - try one</h3>
+<form method="POST" action="/tryit"><p>%s</p></form>
 <form method="POST" action="/update"><p>
 <button type="submit">Update now</button></p></form>
 <form method="POST" action="/restart"><p>
@@ -135,7 +156,7 @@ This clock is a tribute, built with admiration.</i></p>
         app["display_state"], app["uptime"], app["version"], upd,
         _face_options(cfg["face"]), cfg["brightness"], cfg["frost"],
         "checked" if cfg["sleep_enabled"] else "",
-        cfg["sleep_start"], cfg["sleep_end"])
+        cfg["sleep_start"], cfg["sleep_end"], _tryit_buttons())
 
 
 def _urldecode(s):
@@ -210,6 +231,16 @@ def step(app):
             save_config(cfg)
             app["changed"] = True
             conn.send("HTTP/1.0 200 OK\r\n\r\nSaved.")
+        elif "POST /tryit" in req:
+            form = _parse_form(req)
+            name = form.get("routine", "")
+            if name in showmod.IDLE_DUR:
+                app["tryit"] = name
+                conn.send("HTTP/1.0 200 OK\r\n\r\nQueued: "
+                          + name + " - it runs at the next gap.")
+            else:
+                conn.send("HTTP/1.0 200 OK\r\n\r\n"
+                          "Unknown routine.")
         elif "POST /update" in req:
             conn.send("HTTP/1.0 200 OK\r\n\r\nUpdating and rebooting.")
             conn.close()

@@ -99,6 +99,20 @@ def _face_module(name):
     return __import__(mod_name)
 
 
+def _apply_sleep(show, cfg):
+    """Hand the config's sleep hours to the show (idle life v1:
+    the hours suppress random idle routines; the sleep
+    behaviour itself is a later phase)."""
+    def mins(s):
+        try:
+            return int(s[0:2]) * 60 + int(s[3:5])
+        except Exception:
+            return 0
+    show.set_sleep(cfg.get("sleep_enabled", False),
+                   mins(cfg.get("sleep_start", "22:00")),
+                   mins(cfg.get("sleep_end", "06:00")))
+
+
 def _wifi_str(wlan, ssid):
     try:
         if wlan is not None and wlan.isconnected():
@@ -131,7 +145,7 @@ def main():
     app = {"config": cfg, "time_str": "--:--:--",
            "time_source": timekeep.time_source(), "wifi": "",
            "display_state": "starting", "uptime": "00:00:00",
-           "version": VERSION, "changed": False}
+           "version": VERSION, "changed": False, "tryit": None}
 
     # 2. Display FIRST (see the header: begin() refuses if the
     # RTC bus or the radio has run before it). The panel sits
@@ -177,6 +191,7 @@ def main():
 
     fig = figmod.Figure()
     show = showmod.Show(fig, display.dial())
+    _apply_sleep(show, cfg)
     canvas = display.canvas()
 
     # 8. The run loop.
@@ -218,10 +233,16 @@ def main():
             app["wifi"] = _wifi_str(wlan, ssid)
 
         admin.step(app)
+        if app.get("tryit") is not None:
+            # an admin Try-it press: queue the routine; it runs
+            # at the next gap where it fits before the boundary
+            show.queue_idle(app["tryit"])
+            app["tryit"] = None
         if app["changed"]:
             app["changed"] = False
             cfg = admin.load_config()
             app["config"] = cfg
+            _apply_sleep(show, cfg)
             display.set_backlight(cfg["brightness"])
             if cfg.get("face", "painter") != face_name:
                 face_name = cfg.get("face", "painter")

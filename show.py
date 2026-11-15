@@ -44,13 +44,24 @@ DUR = {
     "inspect": 520,
 }
 
-IDLE_DUR = {  # ms, from the prototype
-    "watch": 2100, "brow": 2100, "sip": 2100, "shoulder": 2100,
-    "hat": 4000, "hanky": 3600,
+# Idle life v1 (Nov 15, 2026): the between-minutes routines.
+# Durations are the task's settled ~seconds (the prototype's
+# feel at 480 scale); weights are the random pick's odds.
+IDLE_DUR = {  # ms
+    "watch": 2500, "cap": 3000, "sip": 3400, "scratch": 2000,
+    "rear": 2000, "apple": 4000, "hanky": 3000, "phone": 5000,
+    "plane": 5000, "shoulder": 2100,
 }
-IDLE_TYPES = ("watch", "brow", "shoulder", "sip", "hat", "hanky")
-IDLE_GAP_MIN = 9000     # idle routines no more often than this...
-IDLE_GAP_RAND = 20000   # ...plus a random extra wait
+IDLE_WEIGHTS = (("shoulder", 4), ("watch", 3), ("scratch", 3),
+                ("sip", 2), ("cap", 2), ("hanky", 2), ("rear", 2),
+                ("apple", 2), ("phone", 1), ("plane", 1))
+IDLE_FIRST_MIN = 45000    # first routine 45-90 s after boot...
+IDLE_FIRST_RAND = 45000
+IDLE_EVERY_MIN = 100000   # ...then one every ~100-220 s (the
+IDLE_EVERY_RAND = 120000  # "roughly every 2-4 minutes" band,
+                          # fit retries included)
+IDLE_MARGIN_MS = 1000     # a routine starts only if it ends at
+                          # least this long before the boundary
 
 
 def ease(p):
@@ -98,6 +109,270 @@ def bend_env(p):
     return 1.0 - ease((p - 0.68) / 0.32)
 
 
+# --- idle routines: intent timelines ---
+# Every routine drives BOTH hands along full hang-to-hang paths
+# (waypoints eased per leg), so a hand never teleports: at p=0
+# and p=1 every target is the rest hang. _run_idle resets the
+# intent to _IDLE_NEUTRAL each frame before the routine's
+# function overrides what it needs.
+
+_IDLE_NEUTRAL = {
+    "tip": None, "tool": None, "tip_l": None, "tip_r": None,
+    "prop_l": None, "prop_r": None, "cap_off": False,
+    "behind": None, "core": None, "watch_min": None,
+    "mug_home": True, "apple_bites": 0, "hanky_puff": 0.0,
+    "bend": 0.0, "follow": 0.0, "tau_ms": 200, "head_tilt": 0.0,
+    "lean_in": 0.0,
+}
+
+
+def _path(p, pts):
+    """Piecewise path through [(t, (x, y)), ...], t ascending
+    0..1, smoothstep within each leg - the hand eases out of
+    and into every waypoint."""
+    if p <= pts[0][0]:
+        return pts[0][1]
+    for i in range(len(pts) - 1):
+        t0, a = pts[i]
+        t1, b = pts[i + 1]
+        if p <= t1:
+            f = ease((p - t0) / (t1 - t0)) if t1 > t0 else 1.0
+            return (a[0] + (b[0] - a[0]) * f,
+                    a[1] + (b[1] - a[1]) * f)
+    return pts[-1][1]
+
+
+def _path1(p, pts):
+    """_path for a scalar (the sip's bend envelope)."""
+    if p <= pts[0][0]:
+        return pts[0][1]
+    for i in range(len(pts) - 1):
+        t0, a = pts[i]
+        t1, b = pts[i + 1]
+        if p <= t1:
+            f = ease((p - t0) / (t1 - t0)) if t1 > t0 else 1.0
+            return a + (b - a) * f
+    return pts[-1][1]
+
+
+def _lerp2(a, b, f):
+    return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+
+
+def _env(p, a, b, c, d):
+    """Trapezoid envelope: 0 to a, ease up a..b, hold 1 to c,
+    ease down c..d, 0 after."""
+    if p <= a or p >= d:
+        return 0.0
+    if p < b:
+        return ease((p - a) / (b - a))
+    if p <= c:
+        return 1.0
+    return 1.0 - ease((p - c) / (d - c))
+
+
+def _idle_watch(sh, p):
+    # LEFT arm rises bare-handed, the wristwatch on its wrist;
+    # the watch's hands show the painted time (sh._total). The
+    # brush arm stays at his side.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    wrist = (head[0] - 14, head[1] + 44)
+    e = _env(p, 0.0, 0.22, 0.78, 1.0)
+    fig.set_intent(tip_l=_lerp2(hang_l, wrist, e), follow=0.12,
+                   prop_l="watch", watch_min=sh._total)
+
+
+def _idle_cap(sh, p):
+    # The brush (right) hand takes the cap off and holds it at
+    # his side - hair patch on - while the left hand makes two
+    # passes across his forehead; then the cap goes back on.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    cap_top = (head[0] + 8, head[1] - 20)
+    side = (hang_r[0] + 12, hang_r[1] - 18)
+    tip_r = _path(p, [(0.0, hang_r), (0.18, cap_top),
+                      (0.28, cap_top), (0.48, side), (0.80, side),
+                      (0.93, cap_top), (1.0, hang_r)])
+    off = 0.28 <= p < 0.93
+    fore = (head[0] - 13, head[1] - 3)
+    if p < 0.45:
+        tip_l = _path(p, [(0.0, hang_l), (0.34, hang_l),
+                          (0.45, fore)])
+    elif p <= 0.78:
+        q = (p - 0.45) / 0.33
+        tip_l = (head[0] - 13 * math.cos(q * 4 * math.pi),
+                 head[1] - 3)
+    else:
+        tip_l = _path(p, [(0.78, fore), (0.92, hang_l),
+                          (1.0, hang_l)])
+    fig.set_intent(tip_r=tip_r, tip_l=tip_l, follow=0.10,
+                   cap_off=off, prop_r="cap" if off else None)
+
+
+def _idle_sip(sh, p):
+    # The mug lives on the floor by the bucket, out of hanging
+    # reach - so he steps toward it and DIPS for it (the proven
+    # dip machinery), comes up with it, sips, and dips it back.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    mx, my = figmod.MUG_HOME
+    grab = (mx, my - 8)
+    mouth = (head[0] - 2, head[1] + 13)
+    bend = _path1(p, [(0.0, 0.0), (0.08, 0.0), (0.22, 1.0),
+                      (0.30, 1.0), (0.48, 0.0), (0.70, 0.0),
+                      (0.80, 1.0), (0.86, 1.0), (1.0, 0.0)])
+    tip_r = _path(p, [(0.0, hang_r), (0.22, grab), (0.32, grab),
+                      (0.55, mouth), (0.68, mouth),
+                      (0.84, grab), (0.90, grab), (1.0, hang_r)])
+    if 0.55 <= p <= 0.68:
+        # a small contented bob while the mug is at his mouth
+        tip_r = (tip_r[0], tip_r[1]
+                 + math.sin((p - 0.55) / 0.13 * math.pi) * 2)
+    held = 0.26 <= p < 0.84
+    follow = 0.55 if (p < 0.32 or p > 0.70) else 0.30
+    fig.set_intent(tip_r=tip_r, bend=bend, follow=follow,
+                   prop_r="mug" if held else None,
+                   mug_home=not held)
+
+
+def _idle_scratch(sh, p):
+    # Right hand up to the cap's side, three small rubs.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    side = (head[0] + 17, head[1] - 6)
+    if p < 0.28:
+        tip_r = _path(p, [(0.0, hang_r), (0.28, side)])
+    elif p <= 0.75:
+        q = (p - 0.28) / 0.47
+        tip_r = (side[0] + math.sin(q * 6 * math.pi) * 4,
+                 side[1] + math.sin(q * 12 * math.pi) * 2)
+    else:
+        tip_r = _path(p, [(0.75, side), (1.0, hang_r)])
+    fig.set_intent(tip_r=tip_r, follow=0.12)
+
+
+def _idle_rear(sh, p):
+    # The right arm goes BEHIND him (figure draws it before the
+    # body rect, so the torso occludes it): the forearm emerges
+    # at his far hip and rubs up and down there.
+    fig = sh.fig
+    (fx, fy), head, hang_l, hang_r = sh._anchors()
+    back = (fx - 34, fy - 76)
+    if p < 0.30:
+        tip_r = _path(p, [(0.0, hang_r), (0.30, back)])
+    elif p <= 0.75:
+        q = (p - 0.30) / 0.45
+        tip_r = (back[0], back[1] + math.sin(q * 5 * math.pi) * 5)
+    else:
+        tip_r = _path(p, [(0.75, back), (1.0, hang_r)])
+    fig.set_intent(tip_r=tip_r, behind="r", follow=0.05)
+
+
+def _idle_apple(sh, p):
+    # An apple in the left hand: up to the mouth twice (a bite
+    # notch appears each time), then the core is tossed away -
+    # it arcs down and off the bottom of the dial.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    mouth = (head[0] - 4, head[1] + 12)
+    chest = (head[0] - 26, head[1] + 66)
+    flick = (hang_l[0] - 16, hang_l[1] - 12)
+    tip_l = _path(p, [(0.0, hang_l), (0.20, mouth), (0.30, mouth),
+                      (0.45, chest), (0.52, chest), (0.62, mouth),
+                      (0.70, mouth), (0.78, chest), (0.84, flick),
+                      (1.0, hang_l)])
+    bites = 0 if p < 0.28 else (1 if p < 0.60 else 2)
+    core = None
+    if p >= 0.84:
+        t = (p - 0.84) / 0.16 * IDLE_DUR["apple"]  # ms of toss
+        core = (flick[0] - 0.11 * t,
+                flick[1] - 0.06 * t + 0.0004 * t * t)
+    fig.set_intent(tip_l=tip_l, follow=0.12,
+                   prop_l="apple" if p < 0.84 else None,
+                   apple_bites=bites, core=core)
+
+
+def _idle_hanky(sh, p):
+    # The hanky to his nose, two blows (the hanky swells and
+    # the hand dips with each - the head itself is baked and
+    # cannot bob; the pulse carries the moment), then two dabs.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    nose = (head[0], head[1] + 7)
+    dab_l = (head[0] - 9, head[1] + 9)
+    dab_r = (head[0] + 9, head[1] + 9)
+    tip_l = _path(p, [(0.0, hang_l), (0.22, nose), (0.74, nose),
+                      (0.80, dab_l), (0.86, dab_r), (0.91, nose),
+                      (1.0, hang_l)])
+    puff = 0.0
+    for c in (0.38, 0.62):
+        q = abs(p - c) / 0.09
+        if q < 1:
+            puff = max(puff, math.sin((1 - q) * math.pi * 0.5))
+    if puff > 0:
+        tip_l = (tip_l[0], tip_l[1] + puff * 4)
+    fig.set_intent(tip_l=tip_l, follow=0.15,
+                   prop_l="hanky" if p < 0.97 else None,
+                   hanky_puff=puff)
+
+
+def _idle_phone(sh, p):
+    # Phone to his right ear for a few seconds: two nods (the
+    # phone hand bobs - the baked head cannot nod) and one
+    # gesture from the free hand mid-call.
+    fig = sh.fig
+    (fx, fy), head, hang_l, hang_r = sh._anchors()
+    ear = (head[0] + 18, head[1] + 4)
+    tip_r = _path(p, [(0.0, hang_r), (0.14, ear), (0.86, ear),
+                      (1.0, hang_r)])
+    if 0.2 < p < 0.82:
+        tip_r = (tip_r[0], tip_r[1]
+                 + math.sin((p - 0.2) / 0.62 * 4 * math.pi) * 2.5)
+    gesture = (fx - 34, fy - 118)
+    if 0.42 <= p <= 0.68:
+        tip_l = _path(p, [(0.42, hang_l), (0.52, gesture),
+                          (0.60, gesture), (0.68, hang_l)])
+    else:
+        tip_l = hang_l
+    fig.set_intent(tip_r=tip_r, tip_l=tip_l, follow=0.10,
+                   prop_r="phone" if p < 0.97 else None)
+
+
+def _idle_plane(sh, p):
+    # A small high-wing plane crosses the TOP of the dial; he
+    # shades his eyes with the working hand for its pass. The
+    # plane itself is drawn by update() after the hands (it is
+    # in the room, not behind his glass).
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    brow = (head[0] + 13, head[1] - 11)
+    tip_r = _path(p, [(0.0, hang_r), (0.12, brow), (0.82, brow),
+                      (0.95, hang_r), (1.0, hang_r)])
+    sh.plane_pos = (-40 + 560 * p,
+                    62 + math.sin(p * 4 * math.pi) * 4)
+    fig.set_intent(tip_r=tip_r, follow=0.12)
+
+
+def _idle_shoulder(sh, p):
+    # The lightest filler: both hands ride one slow roll.
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    roll = math.sin(p * 2 * math.pi)
+    lift = -math.sin(p * math.pi) * 5
+    fig.set_intent(
+        tip_l=(hang_l[0] - roll * 3, hang_l[1] + lift + roll * 2),
+        tip_r=(hang_r[0] + roll * 3, hang_r[1] + lift - roll * 2),
+        follow=0.08)
+
+
+_IDLE_FN = {"watch": _idle_watch, "cap": _idle_cap,
+            "sip": _idle_sip, "scratch": _idle_scratch,
+            "rear": _idle_rear, "apple": _idle_apple,
+            "hanky": _idle_hanky, "phone": _idle_phone,
+            "plane": _idle_plane, "shoulder": _idle_shoulder}
+
+
 class Show:
     def __init__(self, fig, dial=None):
         self.fig = fig
@@ -114,7 +389,15 @@ class Show:
         self.last_total = None   # last total-minutes accounted for
         self.frost_clear = 0.0   # cuckoo porthole (not in v1 shows)
         self.idle = None         # {"type","start","dur"}
-        self.next_idle = IDLE_GAP_MIN  # first routine isn't instant
+        self.next_idle_at = None  # ms tick when a routine may start
+        self.last_idle_type = None  # never the same twice in a row
+        self.tryit = None        # admin-queued routine name
+        self.plane_pos = None    # flyby plane (x, y) while active
+        self._total = 0          # time-of-day minutes, per tick
+        self._sec = 0            # seconds into the minute, ditto
+        self.sleep_enabled = False  # sleep hours suppress idles
+        self.sleep_start = 0     # minutes of day (main.py sets)
+        self.sleep_end = 0
         self._last_now = None
 
     # --- show construction ---
@@ -148,6 +431,43 @@ class Show:
         self.step_start = now_ms
         self.running = True
         self.idle = None
+        self.plane_pos = None
+        # the show pre-empts any routine: clear its intent fields
+        # so the hands are the show's from the first frame
+        self.fig.set_intent(tip_l=None, tip_r=None, prop_l=None,
+                            prop_r=None, cap_off=False, behind=None,
+                            core=None, watch_min=None, mug_home=True,
+                            apple_bites=0, hanky_puff=0.0)
+
+    # --- idle configuration (main.py / admin) ---
+
+    def set_sleep(self, enabled, start_min, end_min):
+        """Sleep hours, as minutes of day. While sleeping, no
+        random routine starts (a queued try-it still runs - it
+        is an explicit request, and the sleep BEHAVIOUR is a
+        later phase; this only quiets the idle life)."""
+        self.sleep_enabled = bool(enabled)
+        self.sleep_start = start_min
+        self.sleep_end = end_min
+
+    def queue_idle(self, name):
+        """Admin Try-it: run this routine at the next safe gap
+        (the fit check still applies - it fires early in the
+        next minute if the current one is nearly over)."""
+        if name in IDLE_DUR:
+            self.tryit = name
+            return True
+        return False
+
+    def _sleeping(self):
+        if not self.sleep_enabled:
+            return False
+        s, e, t = self.sleep_start, self.sleep_end, self._total
+        if s == e:
+            return False
+        if s < e:
+            return s <= t < e
+        return t >= s or t < e
 
     def demo(self, now_ms):
         """Run one full minute step on demand, from the currently
@@ -170,6 +490,7 @@ class Show:
         the glass, in front of him) via clockface.compose state
         overrides. Returns the figure pose used."""
         total = time_tuple[3] * 60 + time_tuple[4]
+        self._sec = time_tuple[5]
         self.tick(now_ms, total)
         # 1. the static dial layer
         if self.dial is not None:
@@ -191,12 +512,21 @@ class Show:
             "hour_reveal": self.hour_hand["reveal"],
             "min_reveal": self.min_hand["reveal"],
         })
+        # 4. the flyby plane, when one is crossing: it is in the
+        # room, in front of the glass - drawn last, crisp
+        if self.plane_pos is not None:
+            figmod.draw_plane(canvas, self.plane_pos[0],
+                              self.plane_pos[1])
         return pose
 
     # --- per-frame advance (no drawing) ---
 
     def tick(self, now_ms, total_minutes):
         """Advance the machine and the figure. Call every frame."""
+        self._total = total_minutes
+        if self.next_idle_at is None:
+            self.next_idle_at = now_ms + IDLE_FIRST_MIN \
+                + random.randint(0, IDLE_FIRST_RAND)
         if self._last_now is None:
             dt = 0
         else:
@@ -238,7 +568,6 @@ class Show:
                 self.fig.set_intent(tip=None, tool=None, follow=0.0,
                                     tau_ms=380, bend=0.0, head_tilt=0.0,
                                     lean_in=0.0)
-                self.next_idle = now_ms + IDLE_GAP_MIN
             return
         self._apply_step(step, p)
 
@@ -298,51 +627,95 @@ class Show:
                            bend=0.0, lean_in=0.0,
                            head_tilt=math.sin(p * math.pi) * 0.3)
 
-    # --- idle routines ---
+    # --- idle routines: the scheduler ---
+
+    def _fits(self, name):
+        """True if the routine, started now, ends at least
+        IDLE_MARGIN_MS before the next minute boundary. The
+        seconds count is whole-second granular (the sub-second
+        part is unknown), and the 1 s margin absorbs exactly
+        that uncertainty."""
+        return IDLE_DUR[name] + IDLE_MARGIN_MS \
+            <= (60 - self._sec) * 1000
+
+    def _pick_fitting(self):
+        """Weighted random among the routines that fit in the
+        rest of this minute, never the one that just ran."""
+        cands = [(n, w) for n, w in IDLE_WEIGHTS
+                 if n != self.last_idle_type and self._fits(n)]
+        if not cands:
+            return None
+        tot = 0
+        for _, w in cands:
+            tot += w
+        r = random.randint(0, tot - 1)
+        for n, w in cands:
+            if r < w:
+                return n
+            r -= w
+        return cands[-1][0]
+
+    def _start_idle(self, name, now_ms):
+        self.idle = {"type": name, "start": now_ms,
+                     "dur": IDLE_DUR[name]}
+        self.last_idle_type = name
+
+    def _rest_intent(self):
+        self.fig.set_intent(**_IDLE_NEUTRAL)
+        self.fig.set_intent(tau_ms=380)
 
     def _run_idle(self, now_ms):
-        self.fig.set_intent(bend=0.0)
         if self.idle is None:
-            if now_ms >= self.next_idle:
-                t = random.choice(IDLE_TYPES)
-                self.idle = {"type": t, "start": now_ms,
-                             "dur": IDLE_DUR[t]}
-            else:
-                self.fig.set_intent(tip=None, tool=None, follow=0.0,
-                                    tau_ms=380, head_tilt=0.0)
+            started = False
+            if self.tryit is not None:
+                # a queued try-it fires at the first gap where it
+                # fits - usually just after the next show
+                if self._fits(self.tryit):
+                    self._start_idle(self.tryit, now_ms)
+                    self.tryit = None
+                    started = True
+            elif self.next_idle_at is not None \
+                    and now_ms >= self.next_idle_at \
+                    and not self._sleeping():
+                name = self._pick_fitting()
+                if name is not None:
+                    self._start_idle(name, now_ms)
+                    started = True
+                else:
+                    # too late in the minute for anything -
+                    # retry just after the next show
+                    self.next_idle_at = now_ms \
+                        + (60 - self._sec) * 1000 + 2000
+            if not started:
+                self._rest_intent()
                 return
         p = (now_ms - self.idle["start"]) / self.idle["dur"]
         if p >= 1:
             self.idle = None
-            self.next_idle = now_ms + IDLE_GAP_MIN \
-                + random.randint(0, IDLE_GAP_RAND)
-            self.fig.set_intent(tip=None, tool=None, follow=0.0,
-                                tau_ms=380, head_tilt=0.0)
+            self.plane_pos = None
+            self.next_idle_at = now_ms + IDLE_EVERY_MIN \
+                + random.randint(0, IDLE_EVERY_RAND)
+            self._rest_intent()
             return
-        self._idle_intent(self.idle["type"], p)
+        self.fig.set_intent(**_IDLE_NEUTRAL)
+        _IDLE_FN[self.idle["type"]](self, p)
 
-    def _idle_intent(self, t, p):
-        # Each routine is an intent timeline. The wristwatch check
-        # is sketched; the rest carry the prototype's durations and
-        # get their full timelines in the engine build-out - every
-        # target below was reach-checked in the prototype
-        # (SPEC.md 3.5). v1 figure note: routines that would move
-        # the head or hands beyond a hang read as stillness for now.
+    def _anchors(self):
+        """(feet, head, hang_l, hang_r) from the figure's eased
+        body - the routines' target frame. Targets are absolute
+        canvas coords; pose() derives the IK anchors from the
+        SNAPPED body, at most a snap step away, and every target
+        in the routines was reach-checked against the unsnapped
+        anchors with margin (SPEC 3.5's no-stretch rule)."""
         fig = self.fig
-        if t == "watch":
-            # brush hand rises toward his face, head tilts down
-            tip = (fig.feet_x + 30, fig.feet_y - figmod.HEAD_H + 26)
-            env = math.sin(min(1.0, p * 1.15) * math.pi)
-            if env > 0.05:
-                fig.set_intent(tip=tip, tool="hand", follow=0.10,
-                               tau_ms=200, head_tilt=-0.4 * env)
-            else:
-                fig.set_intent(tip=None, tool=None, follow=0.0,
-                               tau_ms=380, head_tilt=0.0)
-        else:
-            # brow / shoulder / sip / hat / hanky - timelines land
-            # with the idle build-out; he stands easy meanwhile.
-            fig.set_intent(tip=None, tool=None, follow=0.0, tau_ms=380)
+        fx, fy = fig.feet_x, fig.feet_y
+        head = (fx, fy - figmod.HEAD_H)
+        sh_y = fy - figmod.SHOULDER_H
+        hang_l = (fx - figmod.SHOULDER_DX - figmod.HANG_OUT,
+                  sh_y + figmod.HANG_DY)
+        hang_r = (fx + figmod.SHOULDER_DX + figmod.HANG_OUT,
+                  sh_y + figmod.HANG_DY)
+        return (fx, fy), head, hang_l, hang_r
 
     # --- drawing helper for the older loop shape (main.py) ---
 

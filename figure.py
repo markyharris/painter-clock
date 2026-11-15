@@ -50,6 +50,15 @@
 # the sharp v2 picture pixel-for-pixel (the A/B escape hatch,
 # and the cuckoo's clear-circle patch will draw the head sharp
 # the same way - see _draw_head).
+#
+# IDLE LIFE (Nov 15, 2026): show.py's routines drive both hands
+# through intent tip_l / tip_r (full hang-to-hang paths) and hang
+# props on them (intent prop_l / prop_r, cap_off, behind, core,
+# watch_min, mug_home, apple_bites, hanky_puff - all copied into
+# the pose). Props draw per frame in the veiled palette - they
+# are behind his glass too. The one exception is the flyby
+# plane (draw_plane): it is in the room, in front of the glass,
+# drawn raw and crisp by show.py after the hands.
 import math
 from array import array
 
@@ -102,6 +111,28 @@ BUCKET_COL = clockface.rgb565(107, 111, 117)
 BUCKET_DK = clockface.rgb565(84, 88, 94)
 PAINT = clockface.INK
 
+# idle-routine prop colours (Nov 15, 2026 - idle life v1). All
+# but the plane go through the palette, so the frost veils them
+# like the rest of him (they are behind his glass too). The
+# plane is in the ROOM, in front of the glass: it is drawn from
+# the raw constant below, never the palette, so it stays crisp
+# at any frost strength.
+HAIR = clockface.rgb565(96, 78, 62)        # grey-brown, cap off
+MUG = clockface.rgb565(226, 233, 238)      # pale enamel
+MUG_DK = clockface.rgb565(70, 90, 120)     # enamel rim / band
+APPLE = clockface.rgb565(196, 48, 40)
+APPLE_STEM = clockface.rgb565(90, 64, 40)
+PHONE = clockface.rgb565(38, 40, 46)
+WATCH_CASE = clockface.rgb565(90, 90, 96)
+WATCH_FACE = clockface.rgb565(238, 240, 235)
+CORE = clockface.rgb565(222, 205, 165)     # apple core flesh
+PLANE_COL = clockface.rgb565(52, 58, 66)   # raw - outside glass
+
+MUG_HOME = (292, 443)   # the enamel mug lives on the floor by
+                        # the bucket (bucket spans x 315..349);
+                        # drawn there per frame until the sip
+                        # routine's hand takes it (see draw())
+
 # --- the palette the draw functions consume ---
 # _draw_body / _draw_bucket / Figure.draw never touch the raw
 # constants above directly; they index a palette tuple, so
@@ -119,9 +150,19 @@ _P_BDK = 8       # bucket rim / dark
 _P_PAINT = 9     # paint (bucket surface, brush tip)
 _P_WOOD = 10     # brush handle
 _P_CLOTH = 11    # wiping cloth
+_P_HAIR = 12     # idle props (appended - existing indices are
+_P_MUG = 13      # baked into the rect code above and must not
+_P_MUGDK = 14    # move)
+_P_APPLE = 15
+_P_STEM = 16
+_P_PHONE = 17
+_P_WCASE = 18
+_P_WFACE = 19
+_P_CORE = 20
 _RAW_PALETTE = (OVERALLS, OVERALLS_DK, SHIRT, SKIN, CAP, CAP_DK,
                 BOOT, BUCKET_COL, BUCKET_DK, PAINT, BRUSH_WOOD,
-                CLOTH)
+                CLOTH, HAIR, MUG, MUG_DK, APPLE, APPLE_STEM,
+                PHONE, WATCH_CASE, WATCH_FACE, CORE)
 
 # --- frosted glass ---
 DEFAULT_FROST = 55               # config "frost" default
@@ -751,6 +792,25 @@ class Figure:
             "head_tilt": 0.0,    # -1..1 (carried; head is baked in
                                  # the rects in v1 - not rendered)
             "lean_in": 0.0,      # 0..1, cuckoo (not in v1 shows)
+            # idle-life fields (Nov 15, 2026): show.py's routines
+            # drive BOTH hands explicitly and hang props on them.
+            # tip_l / tip_r override the hang (and the show tip)
+            # per hand; the rest is draw state pose() copies out.
+            "tip_l": None,       # explicit left-hand target
+            "tip_r": None,       # explicit right-hand target
+            "prop_l": None,      # in the left hand: "watch" |
+                                 # "apple" | "hanky" | None
+            "prop_r": None,      # in the right hand: "cap" |
+                                 # "mug" | "phone" | None
+            "cap_off": False,    # hair patch over the baked cap
+            "behind": None,      # "l" | "r": that arm is drawn
+                                 # BEFORE the body rect, so the
+                                 # torso occludes it (rear scratch)
+            "core": None,        # tossed apple core (x, y) | None
+            "watch_min": None,   # total minutes for the wristwatch
+            "mug_home": True,    # the mug sits on the floor
+            "apple_bites": 0,    # 0..2 notches punched in the apple
+            "hanky_puff": 0.0,   # 0..1, the nose-blow pulse
         }
 
     def set_intent(self, **kw):
@@ -760,6 +820,11 @@ class Figure:
         """Ease the shoulder (and with it the feet) toward
         home + (tip - home) * follow. Exponential lag, tau per phase."""
         tip = self.intent["tip"]
+        if tip is None:
+            # idle routines drive the hands through tip_r / tip_l:
+            # the body still leans toward the working hand (the
+            # sip's step toward the bucket rides on this)
+            tip = self.intent["tip_r"] or self.intent["tip_l"]
         if tip is not None:
             f = self.intent["follow"]
             des_x = HOME_SHOULDER[0] + (tip[0] - HOME_SHOULDER[0]) * f
@@ -861,6 +926,12 @@ class Figure:
             hand_r = tip
         elif tip is not None and tool in ("cloth", "hand"):
             hand_l = tip
+        # idle routines override per hand (their targets span the
+        # whole routine, hang to hang, so nothing ever teleports)
+        if self.intent["tip_r"] is not None:
+            hand_r = self.intent["tip_r"]
+        if self.intent["tip_l"] is not None:
+            hand_l = self.intent["tip_l"]
         elb_r = ik(sh_r[0], sh_r[1], hand_r[0], hand_r[1], fx)
         elb_l = ik(sh_l[0], sh_l[1], hand_l[0], hand_l[1], fx)
         return {
@@ -875,9 +946,42 @@ class Figure:
             "bucket_x": self.bucket_x,
             "head_tilt": self.intent["head_tilt"],
             "lean_in": self.intent["lean_in"],
+            # idle draw state, copied through for draw()
+            "prop_l": self.intent["prop_l"],
+            "prop_r": self.intent["prop_r"],
+            "cap_off": self.intent["cap_off"],
+            "behind": self.intent["behind"],
+            "core": self.intent["core"],
+            "watch_min": self.intent["watch_min"],
+            "mug_home": self.intent["mug_home"],
+            "apple_bites": self.intent["apple_bites"],
+            "hanky_puff": self.intent["hanky_puff"],
         }
 
     # --- drawing ---
+
+    def _draw_arm(self, canvas, pose, side, pal, hr):
+        """One arm: [halo,] upper = shirt sleeve, forearm = skin,
+        hand a disc - all in the given palette."""
+        sh = pose["shoulder_" + side]
+        el = pose["elbow_" + side]
+        ha = pose["hand_" + side]
+        if hr:
+            _band_poly(canvas, _seg_coords(sh[0], sh[1],
+                                           el[0], el[1],
+                                           11 + 2 * hr),
+                       FROST_HALO)
+            _band_poly(canvas, _seg_coords(el[0], el[1],
+                                           ha[0], ha[1],
+                                           9 + 2 * hr),
+                       FROST_HALO)
+        _band_poly(canvas, _seg_coords(sh[0], sh[1],
+                                       el[0], el[1], 11),
+                   pal[_P_SHIRT])
+        _band_poly(canvas, _seg_coords(el[0], el[1],
+                                       ha[0], ha[1], 9),
+                   pal[_P_SKIN])
+        _band_ellipse(canvas, ha[0], ha[1], 5, 5, pal[_P_SKIN])
 
     def draw(self, canvas, pose):
         """One frame of the man onto the frame canvas: the
@@ -889,8 +993,22 @@ class Figure:
         halo radius each side, flat frost colour) under each arm
         segment, and every colour from the veiled palette
         prepare() selected - at frost=0 the halo pass vanishes
-        and the palette is the raw one, so the frame is v2's."""
+        and the palette is the raw one, so the frame is v2's.
+
+        Idle-life order (Nov 15, 2026): the "behind" arm and the
+        floor mug go down BEFORE the bucket stamp and body rect,
+        so the opaque rect occludes them (the rear scratch hides
+        behind his torso; the mug hides behind his boots when he
+        stands where it lives). Then the hair patch (cap off),
+        the front arm(s), the tool, and the held props."""
         prepare(self.dial)
+        pal = _pal
+        hr = _halo_r
+        behind = pose["behind"]
+        if behind is not None:
+            self._draw_arm(canvas, pose, behind, pal, hr)
+        if pose["mug_home"]:
+            _draw_mug(canvas, MUG_HOME[0], MUG_HOME[1], pal)
         bands, baked = _rects[pose["sprite"]][pose["snap"]]
         if not baked:
             # bucket split: this rect is body-only - stamp the
@@ -907,30 +1025,16 @@ class Figure:
             if hit is not None:
                 src, bx, by = hit
                 win.blit(src, bx, by)
-        # arms: [halo,] upper = shirt sleeve, forearm = skin,
-        # hand a disc - all in the current palette
-        pal = _pal
-        hr = _halo_r
+        if pose["cap_off"]:
+            # hair over the baked cap: an ellipse patch on the
+            # head's cap zone (cap band + brim live at head
+            # centre -22..-5, +-20 wide - see _draw_head)
+            hx, hy = pose["head"]
+            _band_ellipse(canvas, hx, hy - 10, 20, 13, pal[_P_HAIR])
+            _band_ellipse(canvas, hx, hy - 13, 15, 9, pal[_P_HAIR])
         for side in ("l", "r"):
-            sh = pose["shoulder_" + side]
-            el = pose["elbow_" + side]
-            ha = pose["hand_" + side]
-            if hr:
-                _band_poly(canvas, _seg_coords(sh[0], sh[1],
-                                               el[0], el[1],
-                                               11 + 2 * hr),
-                           FROST_HALO)
-                _band_poly(canvas, _seg_coords(el[0], el[1],
-                                               ha[0], ha[1],
-                                               9 + 2 * hr),
-                           FROST_HALO)
-            _band_poly(canvas, _seg_coords(sh[0], sh[1],
-                                           el[0], el[1], 11),
-                       pal[_P_SHIRT])
-            _band_poly(canvas, _seg_coords(el[0], el[1],
-                                           ha[0], ha[1], 9),
-                       pal[_P_SKIN])
-            _band_ellipse(canvas, ha[0], ha[1], 5, 5, pal[_P_SKIN])
+            if side != behind:
+                self._draw_arm(canvas, pose, side, pal, hr)
         # the tool in the working hand (veiled like the rest)
         if pose["tool"] == "brush":
             hx, hy = pose["hand_r"]
@@ -940,3 +1044,124 @@ class Figure:
         elif pose["tool"] == "cloth":
             hx, hy = pose["hand_l"]
             _band_ellipse(canvas, hx, hy, 9, 7, pal[_P_CLOTH])
+        # idle props, in the hands (and one on the wrist)
+        if pose["prop_l"] == "watch":
+            _draw_watch(canvas, pose, pal)
+        elif pose["prop_l"] == "apple":
+            _draw_apple(canvas, pose["hand_l"], pose["apple_bites"],
+                        pal)
+        elif pose["prop_l"] == "hanky":
+            _draw_hanky(canvas, pose["hand_l"], pose["hanky_puff"],
+                        pal)
+        if pose["prop_r"] == "cap":
+            hx, hy = pose["hand_r"]
+            _draw_cap_prop(canvas, hx, hy + 6, pal)
+        elif pose["prop_r"] == "mug":
+            _draw_mug(canvas, pose["hand_r"][0],
+                      pose["hand_r"][1] - 2, pal)
+        elif pose["prop_r"] == "phone":
+            hx, hy = pose["hand_r"]
+            _band_poly(canvas, _quad(hx - 3, hy - 13, hx + 6, hy - 11,
+                                     hx + 8, hy + 3, hx - 1, hy + 1),
+                       pal[_P_PHONE])
+        if pose["core"] is not None:
+            cx, cy = pose["core"]
+            _band_ellipse(canvas, cx, cy, 3, 5, pal[_P_CORE])
+            _band_poly(canvas, _seg_coords(cx, cy - 4, cx + 1,
+                                           cy - 8, 2),
+                       pal[_P_STEM])
+
+
+# --- idle prop drawing (per frame, palette colours - veiled) ---
+
+def _draw_mug(canvas, x, y, pal):
+    """The enamel mug, its base at (x, y): body, rim, handle.
+    Used on the floor at MUG_HOME and in the right hand."""
+    x = int(round(x))
+    y = int(round(y))
+    for win, y0 in canvas.band_windows():
+        if y < y0 or y - 13 >= y0 + display.BAND_H:
+            continue
+        win.fill_rect(x - 6, y - 12 - y0, 12, 12, pal[_P_MUG])
+        win.ellipse(x, y - 12 - y0, 6, 2, pal[_P_MUGDK], True)
+    _band_poly(canvas, _seg_coords(x + 7, y - 10, x + 7, y - 3, 3),
+               pal[_P_MUGDK])
+
+
+def _draw_watch(canvas, pose, pal):
+    """The wristwatch on the left wrist: case + face at the
+    wrist (a little up the forearm from the hand), and two
+    hands showing the PAINTED time - pose["watch_min"] is the
+    dial's total minutes, so his watch agrees with the clock
+    he is painting (the prototype's joke)."""
+    hx, hy = pose["hand_l"]
+    ex, ey = pose["elbow_l"]
+    dx = hx - ex
+    dy = hy - ey
+    d = math.sqrt(dx * dx + dy * dy)
+    if d < 1:
+        d = 1
+    wx = hx - dx / d * 11
+    wy = hy - dy / d * 11
+    _band_ellipse(canvas, wx, wy, 7, 7, pal[_P_WCASE])
+    _band_ellipse(canvas, wx, wy, 5, 5, pal[_P_WFACE])
+    total = pose["watch_min"]
+    if total is not None:
+        for ang, ln in ((clockface.hour_angle_stepped(total), 3),
+                        (clockface.minute_angle(total), 4)):
+            a = math.radians(ang)
+            _band_poly(canvas,
+                       _seg_coords(wx, wy, wx + math.sin(a) * ln,
+                                   wy - math.cos(a) * ln, 1),
+                       pal[_P_PAINT])
+
+
+def _draw_apple(canvas, hand, bites, pal):
+    """The apple in the left hand, with 0..2 bite notches
+    punched in dial cream over its upper edge (the punches are
+    clockface.CREAM - the dial's own colour)."""
+    hx, hy = hand
+    _band_ellipse(canvas, hx, hy - 4, 7, 6, pal[_P_APPLE])
+    _band_poly(canvas, _seg_coords(hx, hy - 9, hx + 2, hy - 13, 2),
+               pal[_P_STEM])
+    if bites >= 1:
+        _band_ellipse(canvas, hx - 6, hy - 8, 3, 3,
+                      clockface.CREAM)
+    if bites >= 2:
+        _band_ellipse(canvas, hx + 5, hy - 9, 3, 3,
+                      clockface.CREAM)
+
+
+def _draw_hanky(canvas, hand, puff, pal):
+    """The hanky at the left hand: a soft white blob that
+    swells with the blow (puff 0..1), with a hanging corner."""
+    hx, hy = hand
+    r = 8 + int(4 * puff + 0.5)
+    _band_ellipse(canvas, hx, hy - 2, r, r - 2, pal[_P_CLOTH])
+    _band_poly(canvas, _quad(hx - 4, hy + 3, hx + 3, hy + 3,
+                             hx + 1, hy + 10, hx - 2, hy + 10),
+               pal[_P_CLOTH])
+
+
+def _draw_cap_prop(canvas, x, y, pal):
+    """His cap, held in the right hand at (x, y): the band as a
+    shallow dome with the brim sticking out front."""
+    x = int(round(x))
+    y = int(round(y))
+    _band_ellipse(canvas, x, y, 11, 6, pal[_P_CAP])
+    _band_poly(canvas, _quad(x - 11, y, x + 12, y, x + 12, y + 3,
+                             x - 11, y + 3), pal[_P_CAPDK])
+
+
+def draw_plane(canvas, x, y):
+    """The flyby plane, drawn by show.py AFTER the hands: it is
+    in the room, in front of the glass, so it uses the raw
+    PLANE_COL and stays crisp at any frost. A small high-wing
+    silhouette ~36 px wide, nose to the right, prop disc at the
+    nose. (x, y) is the fuselage centre."""
+    _band_ellipse(canvas, x, y, 17, 4, PLANE_COL)
+    _band_poly(canvas, _quad(x - 4, y - 3, x + 6, y - 3,
+                             x + 9, y - 9, x - 1, y - 9), PLANE_COL)
+    _band_poly(canvas, _quad(x - 17, y - 1, x - 12, y - 1,
+                             x - 10, y - 7, x - 15, y - 7), PLANE_COL)
+    _band_ellipse(canvas, x + 18, y, 2, 6, PLANE_COL)
