@@ -389,14 +389,21 @@ def _fill_rect_v(views, x, y, w, h, colour):
 # draws him sharp, a veiled palette frosts him, and the flat
 # halo palette draws the frost's halo pass.
 
-def _draw_torso(views, fig, feet, bend, pal):
+def _draw_torso(views, fig, feet, bend, pal, sil=False):
     """The armless body below the neck at `feet` with the given
     bend, in canvas coords. Flat-shaded: boots, legs, overalls +
     bib + straps over a shirt torso - all C framebuf primitives
     through the views. Deterministic in (feet, bend): prepare()
     bakes exactly this into the rects, and pose() derives the
     arm anchors from the same feet/bend, so the arms land on
-    the drawn torso."""
+    the drawn torso.
+
+    sil=True draws ONLY the silhouette: the shapes whose edges
+    are the body's outline (boots, legs, pelvis, the shirt
+    quad). The overalls bib and the straps lie wholly inside
+    that outline, so the frost halo pass - which re-draws the
+    silhouette at offsets, per rect - skips them (see the halo
+    note at _build_rect)."""
     fx, fy = feet
 
     def bp(x, y):
@@ -422,6 +429,8 @@ def _draw_torso(views, fig, feet, bend, pal):
     br = bp(fx + 20, fy - HIP_H)
     _poly_v(views, _quad(tl[0], tl[1], tr[0], tr[1],
                          br[0], br[1], bl[0], bl[1]), pal[_P_SHIRT])
+    if sil:
+        return
     ml = _lerp(tl, bl, 0.30)
     mr = _lerp(tr, br, 0.30)
     _poly_v(views, _quad(ml[0], ml[1], mr[0], mr[1],
@@ -436,7 +445,7 @@ def _draw_torso(views, fig, feet, bend, pal):
             pal[_P_OV])
 
 
-def _draw_head(views, fig, feet, bend, pal):
+def _draw_head(views, fig, feet, bend, pal, sil=False):
     """Neck, head and cap at `feet` with the given bend, drawn
     through the bend transform (the cap tilts with the head in
     the dip - an axis-aligned ellipse there read as a detached
@@ -448,7 +457,10 @@ def _draw_head(views, fig, feet, bend, pal):
     be able to draw the head SHARP whatever the configured
     frost, and this is that path: call it with _RAW_PALETTE and
     no halo pass - exactly the frost=0 treatment - inside the
-    wiped circle."""
+    wiped circle.
+
+    sil=True draws only the silhouette (neck, head, cap, brim)
+    for the frost halo pass - the face is interior detail."""
     fx, fy = feet
 
     def bp(x, y):
@@ -479,6 +491,8 @@ def _draw_head(views, fig, feet, bend, pal):
     b3 = bp(fx - 19, fy - HEAD_H - 5)
     _poly_v(views, _quad(b0[0], b0[1], b1[0], b1[1],
                          b2[0], b2[1], b3[0], b3[1]), pal[_P_CAPDK])
+    if sil:
+        return
     # the face (Mark, Nov 15): two bold eyes and a simple mouth,
     # in the palette's paint colour - near-black, so it reads at
     # 480 across the dial and still reads through the frost
@@ -496,19 +510,23 @@ def _draw_head(views, fig, feet, bend, pal):
                                for v in p]), pal[_P_PAINT])
 
 
-def _draw_body(views, fig, feet, bend, pal):
-    """The whole armless body: torso + head, one palette."""
-    _draw_torso(views, fig, feet, bend, pal)
-    _draw_head(views, fig, feet, bend, pal)
+def _draw_body(views, fig, feet, bend, pal, sil=False):
+    """The whole armless body: torso + head, one palette.
+    sil=True: silhouette only (the frost halo pass)."""
+    _draw_torso(views, fig, feet, bend, pal, sil)
+    _draw_head(views, fig, feet, bend, pal, sil)
 
 
-def _draw_bucket(views, pal, dx=0, dy=0):
+def _draw_bucket(views, pal, dx=0, dy=0, sil=False):
     bx, by = BUCKET[0] + dx, BUCKET[1] + dy
     _poly_v(views, _quad(bx - 17, by - 12, bx + 17, by - 12,
                          bx + 13, by + 12, bx - 13, by + 12),
             pal[_P_BCOL])
     _ellipse_v(views, bx, by - 12, 17, 5, pal[_P_BDK])
-    _ellipse_v(views, bx, by - 13, 14, 4, pal[_P_PAINT])
+    if not sil:
+        # the paint surface sits inside the rim's outline -
+        # interior detail, skipped by the halo pass
+        _ellipse_v(views, bx, by - 13, 14, 4, pal[_P_PAINT])
 
 
 # --- rect pre-compositing (once per dial, at boot) ---
@@ -591,19 +609,26 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
         w = bx1 - bx0 + 1
         h = by1 - by0 + 1
     views, bands = _rect_views(dial, rx, ry, w, h)
-    # the frost halo: the silhouette drawn at the compass
+    # the frost halo: the silhouette drawn at the four CARDINAL
     # offsets in the flat halo colour, so the veiled figure
     # sits in a soft pale glow - the scattered-light edge of a
-    # figure behind frosted glass. Prepare-time only.
+    # figure behind frosted glass. Prepare-time only. The
+    # first frost build drew the WHOLE figure (details and
+    # all) at eight compass offsets; with the finer snap grid
+    # (74 rects) that took prepare() to 8,763 ms on the board.
+    # The halo only needs the outline: sil=True skips every
+    # interior shape (bib, straps, face, bucket paint), and
+    # four offsets dilate the edge the same at r=1-2 px - the
+    # corners give up a single diagonal pixel.
     if _halo_r:
         r = _halo_r
-        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r),
-                       (-r, -r), (r, -r), (-r, r), (r, r)):
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
             if with_bucket:
-                _draw_bucket(views, _HALO_PALETTE, dx, dy)
+                _draw_bucket(views, _HALO_PALETTE, dx, dy, True)
             _draw_body(views, fig,
                        (HOME_FEET[0] + ox + dx,
-                        HOME_FEET[1] + oy + dy), bend, _HALO_PALETTE)
+                        HOME_FEET[1] + oy + dy), bend,
+                       _HALO_PALETTE, True)
     # bucket at its home place, then the body at the grid point
     if with_bucket:
         _draw_bucket(views, _pal)
@@ -622,9 +647,8 @@ def _build_bucket_rect(dial, bucket_box):
                                kx1 - kx0 + 1, ky1 - ky0 + 1)
     if _halo_r:
         r = _halo_r
-        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r),
-                       (-r, -r), (r, -r), (-r, r), (r, r)):
-            _draw_bucket(views, _HALO_PALETTE, dx, dy)
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
+            _draw_bucket(views, _HALO_PALETTE, dx, dy, True)
     _draw_bucket(views, _pal)
     return bands
 
