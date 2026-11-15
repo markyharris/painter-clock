@@ -101,7 +101,10 @@ def bend_env(p):
 class Show:
     def __init__(self, fig, dial=None):
         self.fig = fig
-        self.dial = dial       # the static-layer canvas, if known
+        self.dial = dial
+        if dial is not None:
+            # figure's rects composite over this dial layer
+            fig.dial = dial       # the static-layer canvas, if known
         self.min_hand = {"angle": 0.0, "reveal": 1.0}
         self.hour_hand = {"angle": 0.0, "reveal": 1.0}
         self.steps = []          # current show's step list

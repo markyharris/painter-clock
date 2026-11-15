@@ -358,6 +358,16 @@ def dial():
     return _dial
 
 
+def make_framebuffer(buf, w, h, stride=None):
+    """A real framebuf.FrameBuffer over a caller-owned buffer -
+    the seam for figure.py's pre-composited body rects (figure
+    must not import the driver layer itself). Keep every
+    buffer's spanned bytes at or under the proven band size;
+    figure's per-band rect views are far under it."""
+    return framebuf.FrameBuffer(buf, w, h, framebuf.RGB565,
+                                w if stride is None else stride)
+
+
 def frame_bytes():
     _ensure_canvases()
     return _frame.buf

@@ -9,24 +9,31 @@
 #     always short and the elbow always keeps its bend
 #   * poses are DERIVED from intent each frame, never keyframed
 #
-# DRAWING (Nov 15, 2026 - the sprite/arm split; SPEC addendum):
-# per-frame Python drawing is far too slow on the board, so the
-# body is pre-rendered ONCE at boot (prepare()) into two keyed
-# sprites - standing, and the full dip (waist fold 1.02 rad) -
-# drawn with C framebuf primitives inside band windows of a scratch
-# canvas, head and cap baked in (v1: no separate head tracking, so
-# head_tilt is carried in the pose but not rendered). The bucket is
-# a third small sprite. Per frame, draw() is then just: two sprite
-# blits plus the two arms as filled polygons through the frame
-# canvas's band windows. The blits use per-sprite OPAQUE-RUN LISTS
-# precomputed in prepare() - a per-frame key scan of ~59k sprite
-# pixels in Python (display.blit_sprite's job) would eat the
-# frame budget; with runs precomputed, a blit is a few hundred
-# slice copies and nothing else. The torso switches sprite at
-# bend >= 0.5, and the arm shoulder anchors snap to the same bend
-# so the arms stay glued to the visible torso. Shoulders in the
-# sprites sit at the HOME pose; the whole figure's travel is the
-# blit offset (drawn body - home feet).
+# DRAWING (Nov 15, 2026, v2 - the rect path; SPEC addendum):
+# the v1 keyed-sprite path cost ~4 s a frame on the board: its
+# per-frame blit was ~330 Python slice copies, and on this board
+# a Python-level drawing op costs ~5-10 ms. So the body is now
+# PRE-COMPOSITED at boot (prepare()) into OPAQUE RECTANGLES: for
+# each body pose (standing, dip) and each point of a small snap
+# grid, one cropped rect holds the dial region it covers with the
+# bucket and body already drawn over it, all composited with C
+# framebuf primitives (band blits + poly/ellipse). pose() snaps
+# the drawn body to the same grid and derives the arm anchors
+# from the SNAPPED body, so the arms stay glued to the visible
+# torso. Per frame, draw() is then: a few framebuf->framebuf
+# band blits (C) for the rect, plus the two arms as filled
+# polygons through the frame canvas's band windows, plus the
+# tool. No Python-loop drawing anywhere in the per-frame path.
+#
+# Contract: prepare() composites over the CURRENT static dial
+# layer - the dial must be rendered first (bench_painter and
+# main both render_static() before the first frame). prepare()
+# fingerprints the dial, so a face switch / dial re-render is
+# picked up on the next draw() and the rects rebuilt. The bucket
+# is baked into the rects at BUCKET's home place: moving
+# figure.bucket_x at runtime (the future rearrangement idle)
+# needs a prepare() rebuild to move the drawn bucket - the dip
+# TARGET follows bucket_x immediately, the picture would not.
 import math
 from array import array
 
@@ -46,6 +53,21 @@ ARM_L2 = 47                      # forearm - total reach 95
 REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 93
 BEND_RAD = 1.02                  # waist fold at bend == 1 (~58 deg)
 
+# arm anchors and rest targets, relative to the DRAWN body: the
+# anchors sit just inside the torso's top corners (the sprite's
+# torso spans feet +-24), so the shirt sleeve emerges at the
+# shoulder seam and shows against the dial; the hands hang just
+# outside the thigh silhouette (legs end at feet +-20) at
+# upper-thigh height, on their OWN side. (v1 anchored the arms
+# +-10 about the centre with the hands +-36 out: the sleeves lay
+# invisibly on the shirt torso, the IK picked the inward elbow,
+# and both skin forearms speared out of the belly in an X - the
+# scarecrow in Mark's bench photo, Nov 15.)
+SHOULDER_DX = 19                 # anchor |x| from the body centre
+HANG_OUT = 8                     # hand target this far outboard
+                                 # of its shoulder anchor...
+HANG_DY = 84                     # ...and this far below it
+
 # colours (RGB565 via clockface.rgb565)
 OVERALLS = clockface.rgb565(51, 80, 126)
 OVERALLS_DK = clockface.rgb565(38, 60, 96)
@@ -59,28 +81,44 @@ BRUSH_WOOD = clockface.rgb565(138, 107, 69)
 BUCKET_COL = clockface.rgb565(107, 111, 117)
 BUCKET_DK = clockface.rgb565(84, 88, 94)
 PAINT = clockface.INK
-KEY = clockface.rgb565(255, 0, 255)         # sprite transparent key
 
-# sprite geometry: one region (canvas coords at the home pose) for
-# both body sprites, so they blit at the same offset. It must cover
-# the dipped head: at full bend the head centre lands near
-# (340, 317) and the cap reaches x ~ 378.
-SPR_X = 168
-SPR_Y = 192
-SPR_W = 216
-SPR_H = 272                     # bottom edge 464 (boots end ~457)
-# bucket sprite region (bucket at home); bucket centre x is
-# BUCKET[0] - BKT_X = 26 = BKT_W // 2, so it blits centred on
-# bucket_x.
-BKT_X = 306
-BKT_Y = 416
-BKT_W = 52
-BKT_H = 42
+# --- the snap grids (drawn-body offsets from HOME_FEET, px) ---
+# pose() snaps the eased body offset to the nearest grid point;
+# prepare() pre-composites one rect per grid point. Standing gets
+# a full grid (he follows the hands all over the dial); the dip
+# only ever happens on the short trajectory from the wipe's end
+# (near home) to the bucket, so its grid is two points a side.
+STAND_XS = (-90, -60, -30, 0, 30, 60, 90)
+STAND_YS = (-52, -26, 0)
+DIP_XS = (0, 26)
+DIP_YS = (-26, 5)
+_GRIDS = {"stand": (STAND_XS, STAND_YS), "dip": (DIP_XS, DIP_YS)}
 
 
-def ik(sx, sy, tx, ty):
+def _snap(v, grid):
+    """Nearest grid value (ties go to the one nearer zero)."""
+    best = grid[0]
+    bd = abs(v - best)
+    for g in grid[1:]:
+        d = abs(v - g)
+        if d < bd or (d == bd and abs(g) < abs(best)):
+            best = g
+            bd = d
+    return best
+
+
+def ik(sx, sy, tx, ty, cx=None):
     """Two-bone IK. Returns (elbow_x, elbow_y, hand_x, hand_y) with
-    the target clamped to REACH_MAX - the arm cannot stretch."""
+    the target clamped to REACH_MAX - the arm cannot stretch.
+    cx is the body centreline x for the elbow choice (defaults to
+    the dial centre): the score prefers the LOWER elbow, with the
+    outward term strong enough that a near-vertical hang picks
+    the elbow bowing AWAY from the body - at v1's 0.15 weight the
+    inward candidate won hanging arms by a few px of "lower" (the
+    inward perpendicular dips lower when the arm line leans
+    outward), which is half of how the rest pose crossed."""
+    if cx is None:
+        cx = clockface.CX
     dx = tx - sx
     dy = ty - sy
     d = math.sqrt(dx * dx + dy * dy)
@@ -100,18 +138,18 @@ def ik(sx, sy, tx, ty):
     mx = sx + ux * a
     my = sy + uy * a
     # two elbow candidates; score like the prototype: prefer the
-    # lower elbow with a slight outward bias
+    # lower elbow, with a real outward bias from the body centre
     e1 = (mx - uy * h, my + ux * h)
     e2 = (mx + uy * h, my - ux * h)
 
     def score(e):
-        return e[1] + abs(e[0] - clockface.CX) * 0.15
+        return e[1] + abs(e[0] - cx) * 0.5
 
     elbow = e1 if score(e1) >= score(e2) else e2
     return (elbow[0], elbow[1], tx, ty)
 
 
-# --- band-window shape helpers (boot sprites AND per-frame arms) ---
+# --- band-window shape helpers (per-frame arms) ---
 
 def _quad(x0, y0, x1, y1, x2, y2, x3, y3):
     return array("h", [int(round(v)) for v in
@@ -171,183 +209,268 @@ def _lerp(a, b, f):
     return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
 
 
-# --- sprite preparation (once, at boot) ---
+# --- view-list shape helpers (prepare()-time body drawing) ---
+# A "view" is (framebuffer, vx, vy, vh): a real FrameBuffer whose
+# (0, 0) sits at canvas coords (vx, vy), vh px tall. The helpers
+# take canvas coords and translate per view, skipping views the
+# shape doesn't touch - the same band-limiting as _band_poly, but
+# over any view list (an empty list while measuring extents,
+# a rect's band views at composite time).
 
-_sprites = None          # {"stand": (bytes, runs), "dip": ...}
-_bucket_sprite = None    # (bytes, runs)
-
-
-def _extract(canvas, x, y, w, h):
-    out = bytearray(w * h * 2)
-    buf = canvas.buf
-    row = 0
-    while row < h:
-        so = ((y + row) * display.WIDTH + x) * 2
-        do = row * w * 2
-        out[do:do + w * 2] = buf[so:so + w * 2]
-        row += 1
-    return bytes(out)
-
-
-def _runs(data, w, h):
-    """The sprite's opaque runs as (row, start_px, len_px) tuples -
-    computed once so the per-frame blit is pure slice copies."""
-    key_lo = KEY & 0xFF
-    key_hi = (KEY >> 8) & 0xFF
-    runs = []
-    row = 0
-    while row < h:
-        base = row * w * 2
-        sx = 0
-        while sx < w:
-            while sx < w and data[base + sx * 2] == key_lo \
-                    and data[base + sx * 2 + 1] == key_hi:
-                sx += 1
-            if sx >= w:
-                break
-            start = sx
-            while sx < w and not (data[base + sx * 2] == key_lo
-                                  and data[base + sx * 2 + 1] == key_hi):
-                sx += 1
-            runs.append((row, start, sx - start))
-        row += 1
-    return runs
+# prepare() measures each shape set's extent by calling the
+# helpers with an empty view list and _track set: the helpers
+# accumulate the union of the shapes' own bounding boxes (a
+# filled poly rasterises inside its vertex bbox, an ellipse
+# inside cx+-rx / cy+-ry), which is exact for sizing the rects -
+# and needs no scratch canvas and no pixel scan at all.
+_track = None          # [x0, y0, x1, y1] while measuring
 
 
-def _blit_runs(canvas, data, runs, sw, x, y):
-    """Blit a sprite by its precomputed opaque runs: one slice
-    copy per run, clipped to the canvas. Returns runs drawn."""
-    dst = canvas.buf
-    src = memoryview(data)
-    n = 0
-    for row, start, ln in runs:
-        dy = y + row
-        if dy < 0 or dy >= display.HEIGHT:
+def _track_ext(x0, y0, x1, y1):
+    if _track is None:
+        return
+    if x0 < _track[0]:
+        _track[0] = x0
+    if y0 < _track[1]:
+        _track[1] = y0
+    if x1 > _track[2]:
+        _track[2] = x1
+    if y1 > _track[3]:
+        _track[3] = y1
+
+
+def _poly_v(views, coords, colour):
+    minx = 9999
+    maxx = -9999
+    miny = 9999
+    maxy = -9999
+    i = 0
+    while i < len(coords):
+        vx_ = coords[i]
+        vy_ = coords[i + 1]
+        if vx_ < minx:
+            minx = vx_
+        if vx_ > maxx:
+            maxx = vx_
+        if vy_ < miny:
+            miny = vy_
+        if vy_ > maxy:
+            maxy = vy_
+        i += 2
+    _track_ext(minx, miny, maxx, maxy)
+    for fb, vx, vy, vh in views:
+        if maxy < vy or miny >= vy + vh:
             continue
-        cx0 = x + start
-        s = start
-        if cx0 < 0:
-            s += -cx0
-            ln += cx0
-            cx0 = 0
-        if cx0 + ln > display.WIDTH:
-            ln = display.WIDTH - cx0
-        if ln <= 0:
+        fb.poly(-vx, -vy, coords, colour, True)
+
+
+def _ellipse_v(views, cx, cy, rx, ry, colour):
+    cx = int(round(cx))
+    cy = int(round(cy))
+    _track_ext(cx - rx, cy - ry, cx + rx, cy + ry)
+    for fb, vx, vy, vh in views:
+        if cy + ry < vy or cy - ry >= vy + vh:
             continue
-        so = (row * sw + s) * 2
-        do = (dy * display.WIDTH + cx0) * 2
-        dst[do:do + ln * 2] = src[so:so + ln * 2]
-        n += 1
-    return n
+        fb.ellipse(cx - vx, cy - vy, rx, ry, colour, True)
 
 
-def _draw_body(scratch, fig):
-    """The armless body at the home pose, in canvas coords, with
-    fig.bend preset to the sprite's bend (0 or 1). Flat-shaded:
-    boots, legs, overalls + bib + straps over a shirt torso, head
-    and cap - all through band-window C primitives."""
-    pose = fig.pose()
-    fx, fy = pose["feet"]
-    head = pose["head"]
+def _fill_rect_v(views, x, y, w, h, colour):
+    _track_ext(x, y, x + w - 1, y + h - 1)
+    for fb, vx, vy, vh in views:
+        if y + h <= vy or y >= vy + vh:
+            continue
+        fb.fill_rect(x - vx, y - vy, w, h, colour)
+
+
+# --- the body, drawn into a view list (prepare() only) ---
+
+def _draw_body(views, fig, feet, bend):
+    """The armless body at `feet` with the given bend, in canvas
+    coords. Flat-shaded: boots, legs, overalls + bib + straps
+    over a shirt torso, neck, head and cap - all C framebuf
+    primitives through the views. Deterministic in (feet, bend):
+    prepare() bakes exactly this into the rects, and pose()
+    derives the arm anchors from the same feet/bend, so the arms
+    land on the drawn torso."""
+    fx, fy = feet
 
     def bp(x, y):
-        return fig._bend_point(x, y, fig.bend)
+        return fig._bend_point(x, y, bend, feet)
 
+    head = bp(fx, fy - HEAD_H)
     # boots and legs - never bent (the bend is at the waist)
-    _band_ellipse(scratch, fx - 10, fy - 2, 12, 5, BOOT)
-    _band_ellipse(scratch, fx + 13, fy - 2, 12, 5, BOOT)
-    _band_poly(scratch, _quad(fx - 19, fy - 86, fx - 5, fy - 86,
-                              fx - 6, fy - 2, fx - 20, fy - 2),
-               OVERALLS_DK)
-    _band_poly(scratch, _quad(fx + 5, fy - 86, fx + 19, fy - 86,
-                              fx + 20, fy - 2, fx + 6, fy - 2),
-               OVERALLS_DK)
+    _ellipse_v(views, fx - 10, fy - 2, 12, 5, BOOT)
+    _ellipse_v(views, fx + 13, fy - 2, 12, 5, BOOT)
+    _poly_v(views, _quad(fx - 19, fy - 86, fx - 5, fy - 86,
+                         fx - 6, fy - 2, fx - 20, fy - 2),
+            OVERALLS_DK)
+    _poly_v(views, _quad(fx + 5, fy - 86, fx + 19, fy - 86,
+                         fx + 20, fy - 2, fx + 6, fy - 2),
+            OVERALLS_DK)
     # pelvis (the torso's bent bottom edge overlaps this)
-    scratch.fill_rect(int(fx) - 20, int(fy) - 90, 40, 14, OVERALLS)
+    _fill_rect_v(views, int(fx) - 20, int(fy) - 90, 40, 14, OVERALLS)
     # torso: shirt everywhere, overalls over the lower part, with
     # the bib line at 30% and two straps up to the shoulders
     tl = bp(fx - 24, fy - SHOULDER_H)
     tr = bp(fx + 24, fy - SHOULDER_H)
     bl = bp(fx - 20, fy - HIP_H)
     br = bp(fx + 20, fy - HIP_H)
-    _band_poly(scratch, _quad(tl[0], tl[1], tr[0], tr[1],
-                              br[0], br[1], bl[0], bl[1]), SHIRT)
+    _poly_v(views, _quad(tl[0], tl[1], tr[0], tr[1],
+                         br[0], br[1], bl[0], bl[1]), SHIRT)
     ml = _lerp(tl, bl, 0.30)
     mr = _lerp(tr, br, 0.30)
-    _band_poly(scratch, _quad(ml[0], ml[1], mr[0], mr[1],
-                              br[0], br[1], bl[0], bl[1]), OVERALLS)
+    _poly_v(views, _quad(ml[0], ml[1], mr[0], mr[1],
+                         br[0], br[1], bl[0], bl[1]), OVERALLS)
     for f0 in (0.08, 0.74):     # straps, as fractions along the top
         s0 = _lerp(tl, tr, f0)
         s1 = _lerp(tl, tr, f0 + 0.14)
         b0 = _lerp(ml, mr, f0 + 0.02)
         b1 = _lerp(ml, mr, f0 + 0.12)
-        _band_poly(scratch, _quad(s0[0], s0[1], s1[0], s1[1],
-                                  b1[0], b1[1], b0[0], b0[1]),
-                   OVERALLS)
+        _poly_v(views, _quad(s0[0], s0[1], s1[0], s1[1],
+                             b1[0], b1[1], b0[0], b0[1]),
+            OVERALLS)
     # neck - bridges head and torso, bends with the torso group
     n0 = bp(fx - 6, fy - HEAD_H + 10)
     n1 = bp(fx + 6, fy - HEAD_H + 10)
     n2 = bp(fx + 7, fy - SHOULDER_H + 8)
     n3 = bp(fx - 7, fy - SHOULDER_H + 8)
-    _band_poly(scratch, _quad(n0[0], n0[1], n1[0], n1[1],
-                              n2[0], n2[1], n3[0], n3[1]), SKIN)
+    _poly_v(views, _quad(n0[0], n0[1], n1[0], n1[1],
+                         n2[0], n2[1], n3[0], n3[1]), SKIN)
     # head and cap (baked in - v1 has no separate head tracking).
     # The cap is a band across the top of the head, drawn through
     # the bend transform so it tilts with the head in the dip -
     # an axis-aligned ellipse there read as a detached blob.
     hx, hy = head
-    _band_ellipse(scratch, hx, hy, 20, 23, SKIN)
+    _ellipse_v(views, hx, hy, 20, 23, SKIN)
     c0 = bp(fx - 19, fy - HEAD_H - 22)
     c1 = bp(fx + 19, fy - HEAD_H - 22)
     c2 = bp(fx + 19, fy - HEAD_H - 3)
     c3 = bp(fx - 19, fy - HEAD_H - 3)
-    _band_poly(scratch, _quad(c0[0], c0[1], c1[0], c1[1],
-                              c2[0], c2[1], c3[0], c3[1]), CAP)
+    _poly_v(views, _quad(c0[0], c0[1], c1[0], c1[1],
+                         c2[0], c2[1], c3[0], c3[1]), CAP)
     b0 = bp(fx - 19, fy - HEAD_H - 3)
     b1 = bp(fx + 20, fy - HEAD_H - 3)
     b2 = bp(fx + 20, fy - HEAD_H + 1)
     b3 = bp(fx - 19, fy - HEAD_H + 1)
-    _band_poly(scratch, _quad(b0[0], b0[1], b1[0], b1[1],
-                              b2[0], b2[1], b3[0], b3[1]), CAP_DK)
+    _poly_v(views, _quad(b0[0], b0[1], b1[0], b1[1],
+                         b2[0], b2[1], b3[0], b3[1]), CAP_DK)
 
 
-def _draw_bucket(scratch):
+def _draw_bucket(views):
     bx, by = BUCKET
-    _band_poly(scratch, _quad(bx - 17, by - 12, bx + 17, by - 12,
-                              bx + 13, by + 12, bx - 13, by + 12),
-               BUCKET_COL)
-    _band_ellipse(scratch, bx, by - 12, 17, 5, BUCKET_DK)
-    _band_ellipse(scratch, bx, by - 13, 14, 4, PAINT)
+    _poly_v(views, _quad(bx - 17, by - 12, bx + 17, by - 12,
+                         bx + 13, by + 12, bx - 13, by + 12),
+            BUCKET_COL)
+    _ellipse_v(views, bx, by - 12, 17, 5, BUCKET_DK)
+    _ellipse_v(views, bx, by - 13, 14, 4, PAINT)
 
 
-def prepare():
-    """Pre-render the body sprites (standing + dip) and the bucket
-    sprite into keyed RGB565 bytes. Idempotent; called lazily by
-    draw() and explicitly by the bench runner / main at boot.
-    Renders into a scratch full-size Canvas (freed on return) -
-    sprites are the only survivors."""
-    global _sprites, _bucket_sprite
-    if _sprites is not None:
+# --- rect pre-compositing (once per dial, at boot) ---
+
+_rects = None          # {"stand": {(ox, oy): {band: (fb, bx, by)}},
+                       #  "dip": {...}}
+_prep_key = None       # (id(dial canvas), dial fingerprint)
+
+
+def _dial_fingerprint(dial):
+    """A few dial pixels, sampled wide - enough to notice a face
+    switch / dial re-render (the painter dial is cream at all of
+    these only where nothing is drawn; any other face differs)."""
+    p = dial.pixel
+    return (p(240, 240), p(100, 100), p(240, 60),
+            p(60, 240), p(420, 240), p(240, 430))
+
+
+def _padded_box():
+    """The tracked extent, padded 2 px and clamped to the dial."""
+    return (max(0, _track[0] - 2), max(0, _track[1] - 2),
+            min(display.WIDTH - 1, _track[2] + 2),
+            min(display.HEIGHT - 1, _track[3] + 2))
+
+
+def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box):
+    """One opaque rect for one grid point: the union region of
+    (body shifted by (ox, oy)) and (bucket at home), composited
+    as dial -> bucket -> body with C primitives only. Returns
+    {band_index: (source_fb, blit_x, blit_y)} for draw()."""
+    bx0, by0, bx1, by1 = body_box
+    kx0, ky0, kx1, ky1 = bucket_box
+    rx = min(bx0 + ox, kx0)
+    ry = min(by0 + oy, ky0)
+    w = max(bx1 + ox, kx1) - rx + 1
+    h = max(by1 + oy, ky1) - ry + 1
+    data = bytearray(w * h * 2)
+    # band views over the rect, aligned to the canvas bands -
+    # each view's spanned bytes stay far under display.py's
+    # proven 115,200 B window cap
+    views = []
+    bands = {}
+    b = 0
+    while b < display.BANDS:
+        y0 = b * display.BAND_H
+        r0 = max(ry, y0) - ry
+        r1 = min(ry + h, y0 + display.BAND_H) - ry
+        if r0 < r1:
+            seg = memoryview(data)[r0 * w * 2:r1 * w * 2]
+            fb = display.make_framebuffer(seg, w, r1 - r0, w)
+            views.append((fb, rx, ry + r0, r1 - r0))
+            bands[b] = (fb, rx, (ry + r0) - y0)
+        b += 1
+    # the dial underneath (C blit from the dial's band windows)
+    for fb, vx, vy, vh in views:
+        band_y = (vy // display.BAND_H) * display.BAND_H
+        win = dial.window(0, band_y, display.WIDTH, display.BAND_H)
+        fb.blit(win, -rx, band_y - vy)
+    # bucket at its home place, then the body at the grid point
+    _draw_bucket(views)
+    _draw_body(views, fig, (HOME_FEET[0] + ox, HOME_FEET[1] + oy),
+               bend)
+    return bands
+
+
+def prepare(dial=None):
+    """Pre-composite the body rects (both poses x the snap grid)
+    over the current dial layer. Idempotent per dial: keyed on
+    the dial canvas + a pixel fingerprint, so a re-rendered dial
+    (face switch) rebuilds on the next call. Called explicitly
+    by the bench runner / boot flow after render_static(), and
+    lazily by draw()."""
+    global _rects, _prep_key, _track
+    if dial is None:
+        dial = display.dial()
+    key = (id(dial), _dial_fingerprint(dial))
+    if _rects is not None and _prep_key == key:
         return
-    scratch = display.Canvas(bytearray(display.FRAME_BYTES))
+    # content bboxes first: body per pose + bucket, measured at
+    # home by extent tracking (no drawing, no scratch canvas)
     fig = Figure()
-    out = {}
+    body_box = {}
     for name, bend in (("stand", 0.0), ("dip", 1.0)):
-        scratch.fill(KEY)
-        fig.bend = bend
-        _draw_body(scratch, fig)
-        data = _extract(scratch, SPR_X, SPR_Y, SPR_W, SPR_H)
-        out[name] = (data, _runs(data, SPR_W, SPR_H))
-    scratch.fill(KEY)
-    _draw_bucket(scratch)
-    bdata = _extract(scratch, BKT_X, BKT_Y, BKT_W, BKT_H)
-    _bucket_sprite = (bdata, _runs(bdata, BKT_W, BKT_H))
-    _sprites = out
+        _track = [9999, 9999, -9999, -9999]
+        _draw_body((), fig, HOME_FEET, bend)
+        body_box[name] = _padded_box()
+    _track = [9999, 9999, -9999, -9999]
+    _draw_bucket(())
+    bucket_box = _padded_box()
+    _track = None
+    rects = {}
+    for name, bend in (("stand", 0.0), ("dip", 1.0)):
+        xs, ys = _GRIDS[name]
+        per = {}
+        for oy in ys:
+            for ox in xs:
+                per[(ox, oy)] = _build_rect(dial, fig, bend, ox, oy,
+                                             body_box[name],
+                                             bucket_box)
+        rects[name] = per
+    _rects = rects
+    _prep_key = key
 
 
 class Figure:
     """Holds the smoothed body state. show.py feeds intent; update()
-    advances the easing; pose() returns every joint; draw() paints."""
+    advances the easing; pose() returns every joint (with the
+    drawn body SNAPPED to the rect grid); draw() paints."""
 
     def __init__(self):
         self.feet_x, self.feet_y = HOME_FEET
@@ -356,6 +479,9 @@ class Figure:
         self.bend = 0.0          # 0..1, waist bend envelope (dip)
         self.bob = 0.0           # breathing bob, px
         self.bucket_x = BUCKET[0]  # the bucket can be rearranged
+        self.dial = None         # the static-layer canvas, if a
+                                 # caller (Show) knows it; prepare()
+                                 # falls back to display.dial()
         self.intent = {
             "tip": None,         # (x, y) the working hand must reach
             "tool": None,        # "brush" (right hand) | "cloth" |
@@ -364,7 +490,7 @@ class Figure:
             "tau_ms": 380,
             "bend": 0.0,
             "head_tilt": 0.0,    # -1..1 (carried; head is baked in
-                                 # the sprites in v1 - not rendered)
+                                 # the rects in v1 - not rendered)
             "lean_in": 0.0,      # 0..1, cuckoo (not in v1 shows)
         }
 
@@ -394,12 +520,12 @@ class Figure:
         self.sh_y += (des_y - self.sh_y) * k
         # The drawn body follows the eased shoulder horizontally
         # in full (he steps sideways), but vertically only within
-        # a clamp: the sprite is rigid, so the body rises toward
-        # high work by at most 52 px (feet stay on the dial) and
-        # never sinks through the floor. pose() derives the arm
-        # anchors from this drawn body, so the arms stay glued to
-        # the visible shoulders at any reach; the IK clamp absorbs
-        # whatever vertical travel the clamp withheld.
+        # a clamp: the body is rigid, so it rises toward high work
+        # by at most 52 px (feet stay on the dial) and never sinks
+        # through the floor. pose() derives the arm anchors from
+        # this drawn body (snapped to the rect grid), so the arms
+        # stay glued to the visible shoulders at any reach; the
+        # IK clamp absorbs whatever travel the clamp withheld.
         moving = abs(des_x - self.sh_x) + abs(des_y - self.sh_y)
         step_bob = 2.0 if moving > 6 else 0.0
         self.bob = math.sin(now_ms / 900.0) * 1.0 + step_bob  # breathing
@@ -416,16 +542,20 @@ class Figure:
         target_bend = self.intent["bend"]
         self.bend += (target_bend - self.bend) * min(1.0, dt_ms / 120.0)
 
-    def _bend_point(self, x, y, bend=None):
+    def _bend_point(self, x, y, bend=None, feet=None):
         """Rotate a torso/head point about the hip pivot by
         bend * BEND_RAD, leaning toward the bucket side (+x), plus
-        the crouch drop. Legs/feet are never passed through here."""
+        the crouch drop. Legs/feet are never passed through here.
+        `feet` is the body the point belongs to (the snapped drawn
+        body in pose(), the grid body in prepare())."""
         if bend is None:
             bend = self.bend
+        if feet is None:
+            feet = (self.feet_x, self.feet_y)
         if bend <= 0.001:
             return (x, y)
-        hip_x = self.feet_x
-        hip_y = self.feet_y - HIP_H
+        hip_x = feet[0]
+        hip_y = feet[1] - HIP_H
         ang = bend * BEND_RAD
         crouch = bend * 14
         dx = x - hip_x
@@ -435,45 +565,54 @@ class Figure:
         return (hip_x + dx * ca - dy * sa, hip_y + dx * sa + dy * ca + crouch)
 
     def pose(self):
-        """All joints for this frame, as a dict of points. Drawing
-        geometry uses the SNAPPED bend (0 or 1 - whichever body
-        sprite is on show) so the arm anchors sit exactly on the
-        visible torso; the eased bend is reported alongside."""
+        """All joints for this frame, as a dict of points. The
+        drawn body is SNAPPED to the rect grid (the (ox, oy) in
+        "snap"); the arm anchors sit on the snapped torso - each
+        shoulder anchor bend-transformed from its own corner, so
+        it tracks the drawn top edge - and the IK targets stay
+        continuous (the working hand still tracks the stroke
+        frontier exactly). The eased bend is reported alongside
+        its snapped draw value."""
         bd = 1.0 if self.bend >= 0.5 else 0.0
-        # arm anchors sit on the DRAWN body (see update()'s clamp)
-        sx, sy = self._bend_point(self.body_x + 4,
-                                  self.body_y - SHOULDER_H, bd)
-        # shoulders: working side +6x is 'right' (brush), left cloth
-        sh_r = (sx + 6, sy)
-        sh_l = (sx - 14, sy)
-        head = self._bend_point(self.feet_x, self.feet_y - HEAD_H, bd)
+        sprite = "dip" if bd >= 1.0 else "stand"
+        xs, ys = _GRIDS[sprite]
+        sox = _snap(self.body_x - HOME_FEET[0], xs)
+        soy = _snap(self.body_y - HOME_FEET[1], ys)
+        feet = (HOME_FEET[0] + sox, HOME_FEET[1] + soy)
+        fx, fy = feet
+        # shoulders: working side +x is 'right' (brush), left cloth
+        sh_r = self._bend_point(fx + SHOULDER_DX,
+                                fy - SHOULDER_H, bd, feet)
+        sh_l = self._bend_point(fx - SHOULDER_DX,
+                                fy - SHOULDER_H, bd, feet)
+        head = self._bend_point(fx, fy - HEAD_H, bd, feet)
         tip = self.intent["tip"]
         tool = self.intent["tool"]
-        # default hands: hanging at his sides, at thigh length -
-        # ~85 px below and ~35 out from the shoulders, so the
-        # fixed arm hangs nearly straight with a soft elbow, hands
-        # clear of the legs (a +62 target is only 65 from the
-        # shoulder and forces a hard, crossed bend)
-        hang_r = (sx + 34, sy + 84)
-        hang_l = (sx - 38, sy + 84)
+        # default hands: hanging at his sides - just outboard of
+        # each shoulder anchor, at upper-thigh height, so the arm
+        # hangs nearly straight with a soft outward elbow, hands
+        # hugging his own thighs
+        hang_r = (sh_r[0] + HANG_OUT, sh_r[1] + HANG_DY)
+        hang_l = (sh_l[0] - HANG_OUT, sh_l[1] + HANG_DY)
         if bd >= 1.0:
-            hang_l = (self.feet_x - 18, self.feet_y - 60)  # knee brace
+            hang_l = (fx - 18, fy - 60)  # knee brace
         hand_r = hang_r
         hand_l = hang_l
         if tip is not None and tool == "brush":
             hand_r = tip
         elif tip is not None and tool in ("cloth", "hand"):
             hand_l = tip
-        elb_r = ik(sh_r[0], sh_r[1], hand_r[0], hand_r[1])
-        elb_l = ik(sh_l[0], sh_l[1], hand_l[0], hand_l[1])
+        elb_r = ik(sh_r[0], sh_r[1], hand_r[0], hand_r[1], fx)
+        elb_l = ik(sh_l[0], sh_l[1], hand_l[0], hand_l[1], fx)
         return {
-            "feet": (self.feet_x, self.feet_y),
+            "feet": feet,
             "shoulder_r": sh_r, "shoulder_l": sh_l,
             "elbow_r": (elb_r[0], elb_r[1]), "hand_r": (elb_r[2], elb_r[3]),
             "elbow_l": (elb_l[0], elb_l[1]), "hand_l": (elb_l[2], elb_l[3]),
             "head": head,
             "tool": tool, "bend": self.bend, "bend_draw": bd,
-            "sprite": "dip" if bd >= 1.0 else "stand",
+            "sprite": sprite,
+            "snap": (sox, soy),
             "bucket_x": self.bucket_x,
             "head_tilt": self.intent["head_tilt"],
             "lean_in": self.intent["lean_in"],
@@ -482,20 +621,19 @@ class Figure:
     # --- drawing ---
 
     def draw(self, canvas, pose):
-        """One frame of the man onto the frame canvas: bucket
-        sprite, body sprite (standing or dip, at the body's current
-        offset), then the arms and the tool in the working hand -
-        band-window polygons over the blits."""
-        prepare()
-        # bucket first - he stands in front of it
-        bdata, bruns = _bucket_sprite
-        _blit_runs(canvas, bdata, bruns, BKT_W,
-                   int(pose["bucket_x"]) - BKT_W // 2, BKT_Y)
-        # body sprite at the figure's travel offset from home
-        ox = int(round(pose["feet"][0])) - HOME_FEET[0]
-        oy = int(round(pose["feet"][1])) - HOME_FEET[1]
-        data, runs = _sprites[pose["sprite"]]
-        _blit_runs(canvas, data, runs, SPR_W, SPR_X + ox, SPR_Y + oy)
+        """One frame of the man onto the frame canvas: the
+        pre-composited body rect for the pose's snapped grid
+        point (framebuf->framebuf band blits, C), then the arms
+        and the tool in the working hand - band-window polygons
+        over the blit. Upper arm is the shirt sleeve, forearm and
+        hand are skin."""
+        prepare(self.dial)
+        bands = _rects[pose["sprite"]][pose["snap"]]
+        for win, y0 in canvas.band_windows():
+            hit = bands.get(y0 // display.BAND_H)
+            if hit is not None:
+                src, bx, by = hit
+                win.blit(src, bx, by)
         # arms: upper = shirt sleeve, forearm = skin, hand a disc
         for side in ("l", "r"):
             sh = pose["shoulder_" + side]

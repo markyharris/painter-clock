@@ -2,7 +2,8 @@
 #
 # Run this file in Thonny on the board (painter-firmware_v2.bin).
 # It brings the panel up through display.py, renders the dial,
-# pre-renders the figure sprites, paints the scene at 10:09, then
+# pre-composites the figure body rects, paints the scene at
+# 10:09, then
 # runs the 10:10 minute show ONCE in real time - glance, wipe the
 # old minute hand, step to the bucket and dip, paint the new hand,
 # step back and inspect - printing per-frame timings at the end
@@ -36,8 +37,8 @@ def main():
           time.ticks_diff(time.ticks_ms(), t0))
 
     t0 = time.ticks_ms()
-    figure.prepare()
-    print("bench: sprite prepare ms:",
+    figure.prepare(display.dial())
+    print("bench: rect prepare ms:",
           time.ticks_diff(time.ticks_ms(), t0))
 
     fig = figure.Figure()
@@ -78,6 +79,20 @@ def main():
         print("bench: show wall ms:", wall, "- frames:", len(frames))
         print("bench: frame update+show ms - min:", min(frames),
               "avg:", int(avg), "max:", max(frames))
+
+    # figure-only draw cost (pose + draw, no hands, no show) -
+    # the number the v2 rect path is judged by; drawn onto the
+    # frame canvas without show(), then the held frame is
+    # re-composed clean
+    reps = []
+    for _ in range(10):
+        t0 = time.ticks_ms()
+        fig.draw(canvas, fig.pose())
+        reps.append(time.ticks_diff(time.ticks_ms(), t0))
+    print("bench: figure draw ms - min:", min(reps),
+          "avg:", int(sum(reps) / len(reps)), "max:", max(reps))
+    sh.update(canvas, time.ticks_ms(), T_1010)
+    display.show()
     print("bench: final frame held at 10:10")
 
 
