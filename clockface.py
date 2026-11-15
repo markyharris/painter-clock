@@ -163,11 +163,32 @@ def draw_hand(fb, angle_deg, length, base_width, reveal, colour=INK):
     if reveal <= 0.003:
         return
     coords = _hand_coords(angle_deg, length, base_width, reveal)
+    # Band-limit both calls (figure's helpers do the same): a
+    # band whose y-range the polygon's extent misses can only
+    # clip to nothing, so calling into it is pure overhead -
+    # skipping it changes no pixel. The centre boss is limited
+    # by its own extent the same way. (The band height is read
+    # off the window spacing - band_windows() bands are uniform,
+    # and this module stays free of display imports.)
+    miny = 9999
+    maxy = -9999
+    i = 1
+    while i < len(coords):
+        v = coords[i]
+        if v < miny:
+            miny = v
+        if v > maxy:
+            maxy = v
+        i += 2
     # centre boss
     r = int(base_width * 0.85)
-    for win, y0 in fb.band_windows():
-        win.poly(0, -y0, coords, colour, True)
-        win.ellipse(CX, CY - y0, r, r, colour, True)
+    wins = list(fb.band_windows())
+    bh = wins[1][1] - wins[0][1] if len(wins) > 1 else 480
+    for win, y0 in wins:
+        if maxy >= y0 and miny < y0 + bh:
+            win.poly(0, -y0, coords, colour, True)
+        if CY + r >= y0 and CY - r < y0 + bh:
+            win.ellipse(CX, CY - y0, r, r, colour, True)
 
 
 def _tick_coords(ang, r0, r1, w):

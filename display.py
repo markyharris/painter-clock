@@ -29,8 +29,10 @@
 #
 # So: frames are composed in plain bytearrays (this module's Canvas
 # class draws into them with row-slice writes, never a full-size
-# FrameBuffer), and show() ships the frame in 4 bands of 120 lines
-# via memoryview slices - no copies, no big transfers.
+# FrameBuffer), and show() ships the frame in bands of 120 lines
+# via memoryview slices - no copies, no big transfers - sending
+# only the bands that changed since the last presented frame
+# (see show(); the per-band transfer cap above still applies).
 #
 # Second bench lesson (Nov 15, later): Python-loop drawing is far
 # too slow on the board - Canvas-drawn dial render 54,410 ms, hand
@@ -295,6 +297,9 @@ _live = False          # True once the real driver is running
 _backlight = 255
 _frame = None          # Canvas: the frame being composed
 _dial = None           # Canvas: the pre-rendered static layer
+_shown = None          # bytearray shadow of the last presented
+                       # frame (dirty-band show(), below)
+_shown_bands = None    # per-band validity flags for _shown
 
 
 def _ensure_canvases():
@@ -386,18 +391,45 @@ def framebuffer():
     return canvas()
 
 
-def show():
-    """Present the frame canvas: 4 draw_bitmap calls, one 480x120
-    band each, memoryview slices (no copies). Returns True if the
-    panel is live and every band was accepted."""
+def show(force=False):
+    """Present the frame canvas, one draw_bitmap per 480x120
+    band, memoryview slices (no copies) - but ONLY the bands
+    whose bytes changed since the last presented frame
+    (dirty-band presentation, Nov 15 smoothness pass).
+
+    A shadow copy of the last presented frame is kept in
+    _shown; each band is compared against it with memoryview
+    ==, which this firmware's MicroPython resolves to a C
+    memcmp over the two buffers (py/objarray.c array_binary_op
+    -> mp_seq_cmp_bytes) - no copies, no Python pixel loops.
+    A band that matches is not re-sent: while he works, the
+    figure and the moving hand touch 2-3 bands, and the
+    untouched band (often the top one) stays on the panel
+    as-is. force=True re-sends every band and re-syncs the
+    shadow. Returns True if the panel is live and every
+    needed band was accepted; a band whose draw fails stays
+    stale in the shadow, so the next show() retries it."""
+    global _shown, _shown_bands
     if not _live or _board is None:
         return False
     buf = _frame.buf
+    if _shown is None:
+        _shown = bytearray(FRAME_BYTES)
+        _shown_bands = [False] * BANDS
+    shadow = memoryview(_shown)
     ok = True
     for band in range(BANDS):
         y = band * BAND_H
-        seg = memoryview(buf)[y * ROW_BYTES:(y + BAND_H) * ROW_BYTES]
-        if not _board.draw_bitmap(0, y, WIDTH, BAND_H, seg):
+        lo = y * ROW_BYTES
+        hi = lo + BAND_H * ROW_BYTES
+        seg = memoryview(buf)[lo:hi]
+        if not force and _shown_bands[band] \
+                and seg == shadow[lo:hi]:
+            continue
+        if _board.draw_bitmap(0, y, WIDTH, BAND_H, seg):
+            _shown[lo:hi] = seg
+            _shown_bands[band] = True
+        else:
             ok = False
     return ok
 

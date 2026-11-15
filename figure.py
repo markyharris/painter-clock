@@ -16,7 +16,9 @@
 # PRE-COMPOSITED at boot (prepare()) into OPAQUE RECTANGLES: for
 # each body pose (standing, dip) and each point of a small snap
 # grid, one cropped rect holds the dial region it covers with the
-# bucket and body already drawn over it, all composited with C
+# body already drawn over it (the bucket baked in too, where the
+# rect reaches it - see the bucket split at the snap grids), all
+# composited with C
 # framebuf primitives (band blits + poly/ellipse). pose() snaps
 # the drawn body to the same grid and derives the arm anchors
 # from the SNAPPED body, so the arms stay glued to the visible
@@ -174,11 +176,24 @@ def _frost_state(frost):
 # prepare() pre-composites one rect per grid point. Standing gets
 # a full grid (he follows the hands all over the dial); the dip
 # only ever happens on the short trajectory from the wipe's end
-# (near home) to the bucket, so its grid is two points a side.
-STAND_XS = (-90, -60, -30, 0, 30, 60, 90)
-STAND_YS = (-52, -26, 0)
-DIP_XS = (0, 26)
-DIP_YS = (-26, 5)
+# (near home) to the bucket, so its grid stays small.
+#
+# SMOOTHNESS PASS (Nov 15, 2026): the v2 steps (30 px x, 26 px
+# y) read as teleports on the board - the body visibly jumped
+# between snap points mid-stroke. The steps are halved (15 px x,
+# 13 px y standing; the dip refined in proportion), capping the
+# snap error at 7.5 / 6.5 px. The grid grows 25 -> 74 rects, and
+# the memory stays in budget through the BUCKET SPLIT: a
+# standing rect whose (halo-padded) body box does not reach the
+# bucket box no longer bakes the bucket in - the bucket is
+# composited ONCE into a shared rect that draw() stamps first
+# (the two boxes never overlap, so the stamp order cannot
+# interact). Rects that do reach the bucket - the dip, the
+# rightmost standing columns - keep the union compositing.
+STAND_XS = (-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90)
+STAND_YS = (-52, -39, -26, -13, 0)
+DIP_XS = (0, 13, 26)
+DIP_YS = (-26, -11, 5)
 _GRIDS = {"stand": (STAND_XS, STAND_YS), "dip": (DIP_XS, DIP_YS)}
 
 
@@ -498,8 +513,13 @@ def _draw_bucket(views, pal, dx=0, dy=0):
 
 # --- rect pre-compositing (once per dial, at boot) ---
 
-_rects = None          # {"stand": {(ox, oy): {band: (fb, bx, by)}},
-                       #  "dip": {...}}
+_rects = None          # {"stand": {(ox, oy): (bands, baked)},
+                       #  "dip": {...}} - bands maps band index ->
+                       # (source_fb, blit_x, blit_y); baked says
+                       # the bucket is composited into the rect
+                       # (False -> draw() stamps _bucket_bands
+                       # first; see the grid note above)
+_bucket_bands = None   # the shared bucket-only rect's bands
 _prep_key = None       # (id(dial canvas), dial fingerprint, frost)
 
 
@@ -521,21 +541,13 @@ def _padded_box(pad=2):
             min(display.HEIGHT - 1, _track[3] + pad))
 
 
-def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box):
-    """One opaque rect for one grid point: the union region of
-    (body shifted by (ox, oy)) and (bucket at home), composited
-    as dial -> bucket -> body with C primitives only. Returns
-    {band_index: (source_fb, blit_x, blit_y)} for draw()."""
-    bx0, by0, bx1, by1 = body_box
-    kx0, ky0, kx1, ky1 = bucket_box
-    rx = min(bx0 + ox, kx0)
-    ry = min(by0 + oy, ky0)
-    w = max(bx1 + ox, kx1) - rx + 1
-    h = max(by1 + oy, ky1) - ry + 1
+def _rect_views(dial, rx, ry, w, h):
+    """Band views over a fresh rect buffer at canvas (rx, ry),
+    with the dial blitted in. Returns (views, bands): the views
+    for the shape helpers, and the {band: (fb, bx, by)} mapping
+    draw() consumes. Each view's spanned bytes stay far under
+    display.py's proven 115,200 B window cap."""
     data = bytearray(w * h * 2)
-    # band views over the rect, aligned to the canvas bands -
-    # each view's spanned bytes stay far under display.py's
-    # proven 115,200 B window cap
     views = []
     bands = {}
     b = 0
@@ -554,22 +566,66 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box):
         band_y = (vy // display.BAND_H) * display.BAND_H
         win = dial.window(0, band_y, display.WIDTH, display.BAND_H)
         fb.blit(win, -rx, band_y - vy)
-    # the frost halo: the whole silhouette (bucket + body) drawn
-    # at the compass offsets in the flat halo colour, so the
-    # veiled body sits in a soft pale glow - the scattered-light
-    # edge of a figure behind frosted glass. Prepare-time only.
+    return views, bands
+
+
+def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
+                with_bucket=True):
+    """One opaque rect for one grid point: the body shifted by
+    (ox, oy), composited as dial -> halo -> [bucket ->] body
+    with C primitives only. with_bucket=True (the union path)
+    covers the union region of the shifted body and the bucket
+    at home; with_bucket=False (the bucket split - the shifted
+    body box does not reach the bucket box) makes a body-only
+    rect, and draw() stamps the shared bucket rect separately.
+    Returns {band_index: (source_fb, blit_x, blit_y)}."""
+    bx0, by0, bx1, by1 = body_box
+    if with_bucket:
+        kx0, ky0, kx1, ky1 = bucket_box
+        rx = min(bx0 + ox, kx0)
+        ry = min(by0 + oy, ky0)
+        w = max(bx1 + ox, kx1) - rx + 1
+        h = max(by1 + oy, ky1) - ry + 1
+    else:
+        rx, ry = bx0 + ox, by0 + oy
+        w = bx1 - bx0 + 1
+        h = by1 - by0 + 1
+    views, bands = _rect_views(dial, rx, ry, w, h)
+    # the frost halo: the silhouette drawn at the compass
+    # offsets in the flat halo colour, so the veiled figure
+    # sits in a soft pale glow - the scattered-light edge of a
+    # figure behind frosted glass. Prepare-time only.
+    if _halo_r:
+        r = _halo_r
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r),
+                       (-r, -r), (r, -r), (-r, r), (r, r)):
+            if with_bucket:
+                _draw_bucket(views, _HALO_PALETTE, dx, dy)
+            _draw_body(views, fig,
+                       (HOME_FEET[0] + ox + dx,
+                        HOME_FEET[1] + oy + dy), bend, _HALO_PALETTE)
+    # bucket at its home place, then the body at the grid point
+    if with_bucket:
+        _draw_bucket(views, _pal)
+    _draw_body(views, fig, (HOME_FEET[0] + ox, HOME_FEET[1] + oy),
+               bend, _pal)
+    return bands
+
+
+def _build_bucket_rect(dial, bucket_box):
+    """The shared bucket-only rect for the bucket split: dial ->
+    halo -> bucket over the bucket box, composited once per
+    prepare() and stamped by draw() under every split body rect
+    (their boxes never reach it - see the grid note)."""
+    kx0, ky0, kx1, ky1 = bucket_box
+    views, bands = _rect_views(dial, kx0, ky0,
+                               kx1 - kx0 + 1, ky1 - ky0 + 1)
     if _halo_r:
         r = _halo_r
         for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r),
                        (-r, -r), (r, -r), (-r, r), (r, r)):
             _draw_bucket(views, _HALO_PALETTE, dx, dy)
-            _draw_body(views, fig,
-                       (HOME_FEET[0] + ox + dx,
-                        HOME_FEET[1] + oy + dy), bend, _HALO_PALETTE)
-    # bucket at its home place, then the body at the grid point
     _draw_bucket(views, _pal)
-    _draw_body(views, fig, (HOME_FEET[0] + ox, HOME_FEET[1] + oy),
-               bend, _pal)
     return bands
 
 
@@ -587,7 +643,8 @@ def prepare(dial=None, frost=None):
     halo radius for the strength are (re)derived on EVERY call,
     cache hit or not, so draw()'s per-frame arms always match
     the baked rects."""
-    global _rects, _prep_key, _track, _frost, _pal, _halo_r
+    global _rects, _bucket_bands, _prep_key, _track, _frost, \
+        _pal, _halo_r
     if dial is None:
         dial = display.dial()
     if frost is not None:
@@ -615,16 +672,33 @@ def prepare(dial=None, frost=None):
     bucket_box = _padded_box(pad)
     _track = None
     rects = {}
+    bucket_bands = None
     for name, bend in (("stand", 0.0), ("dip", 1.0)):
         xs, ys = _GRIDS[name]
+        bb = body_box[name]
         per = {}
         for oy in ys:
             for ox in xs:
-                per[(ox, oy)] = _build_rect(dial, fig, bend, ox, oy,
-                                             body_box[name],
-                                             bucket_box)
+                # the bucket split: bake the bucket into the
+                # rect only when the shifted (halo-padded) body
+                # box reaches the bucket box - always true for
+                # the dip (he leans over the bucket), and for
+                # the rightmost standing columns
+                baked = name == "dip" or (
+                    bb[0] + ox <= bucket_box[2]
+                    and bucket_box[0] <= bb[2] + ox
+                    and bb[1] + oy <= bucket_box[3]
+                    and bucket_box[1] <= bb[3] + oy)
+                per[(ox, oy)] = (_build_rect(dial, fig, bend,
+                                             ox, oy, bb,
+                                             bucket_box, baked),
+                                 baked)
+                if not baked and bucket_bands is None:
+                    bucket_bands = _build_bucket_rect(dial,
+                                                      bucket_box)
         rects[name] = per
     _rects = rects
+    _bucket_bands = bucket_bands
     _prep_key = key
 
 
@@ -793,7 +867,17 @@ class Figure:
         prepare() selected - at frost=0 the halo pass vanishes
         and the palette is the raw one, so the frame is v2's."""
         prepare(self.dial)
-        bands = _rects[pose["sprite"]][pose["snap"]]
+        bands, baked = _rects[pose["sprite"]][pose["snap"]]
+        if not baked:
+            # bucket split: this rect is body-only - stamp the
+            # shared bucket rect first (the two boxes are
+            # disjoint, so the stamp cannot interact with the
+            # body rect that follows)
+            for win, y0 in canvas.band_windows():
+                hit = _bucket_bands.get(y0 // display.BAND_H)
+                if hit is not None:
+                    src, bx, by = hit
+                    win.blit(src, bx, by)
         for win, y0 in canvas.band_windows():
             hit = bands.get(y0 // display.BAND_H)
             if hit is not None:
