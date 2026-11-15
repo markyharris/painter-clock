@@ -81,13 +81,13 @@ def main():
     # 5. display (stub-tolerant: everything below runs regardless)
     live = display.init()
     app["display_state"] = "live" if live else "stub - no driver yet"
-    fb = display.framebuffer()
 
-    # static dial layer, rendered once
-    import framebuf
-    dial_buf = bytearray(480 * 480 * 2)
-    dial = framebuf.FrameBuffer(dial_buf, 480, 480, framebuf.RGB565)
-    clockface.draw_dial(dial)
+    # Static dial layer, rendered once into display.dial().
+    # NOTE (Nov 15 bench): do NOT build a full-size
+    # framebuf.FrameBuffer here - constructing one at 480x480 wedges
+    # the chip hard (see display.py). The dial lives in a plain
+    # bytearray Canvas; each frame starts by copying it in.
+    clockface.render_static(display.dial())
 
     # 6. servers + the show
     admin.start()
@@ -117,7 +117,8 @@ def main():
         pose = fig.pose()
 
         # compose: dial layer -> figure -> hands -> present
-        fb.blit(dial, 0, 0)
+        fb = display.canvas()
+        fb.copy_from(display.dial())
         fig.draw(fb, pose)
         show.draw_hands(fb)
         display.show()
