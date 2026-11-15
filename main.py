@@ -4,16 +4,21 @@
 # shows the whole boot story):
 #   1. BOOT sample - the rehoming gesture, BEFORE anything that
 #      can hang (prov.run_portal() never returns)
-#   2. timekeep.init_rtc() - system clock from the PCF85063, so
+#   2. display.init() - MUST precede the RTC and Wi-Fi stages:
+#      board-proven Nov 15, 2026 that Board.begin() fails if
+#      other hardware activity (the I2C bus, the radio) has run
+#      first; every successful bench run began the panel first.
+#      (timekeep also uses SoftI2C for the same reason.)
+#   3. timekeep.init_rtc() - system clock from the PCF85063, so
 #      the first painted frame already shows local time
-#   3. Wi-Fi join from wifi_cfg.py; no usable creds OR a failed
+#   4. Wi-Fi join from wifi_cfg.py; no usable creds OR a failed
 #      join drops into the PainterClock-Setup portal (rehoming)
-#   4. NTP sync - the authority; non-fatal if it fails (the RTC
+#   5. NTP sync - the authority; non-fatal if it fails (the RTC
 #      carries the clock, and the loop re-syncs when it can)
-#   5. display.init() -> the face's render_static() into the
-#      dial layer -> figure.prepare() (body rects over the dial)
-#   6. admin server + the updater's after-boot check (flag only)
-#   7. The run loop: show.Show driven by REAL local time
+#   6. The face's render_static() into the dial layer ->
+#      figure.prepare() (body rects over the dial)
+#   7. admin server + the updater's after-boot check (flag only)
+#   8. The run loop: show.Show driven by REAL local time
 #
 # The loop: show.update() composes a frame only when something
 # changed - a show running, an idle routine active, a minute
@@ -122,16 +127,26 @@ def main():
         print("main: BOOT held just after power-up - setup portal")
         prov.run_portal()  # never returns (reboots on save)
 
-    # 2. RTC -> system clock (local time from the first frame).
-    timekeep.init_rtc()
-
     cfg = admin.load_config()
     app = {"config": cfg, "time_str": "--:--:--",
            "time_source": timekeep.time_source(), "wifi": "",
            "display_state": "starting", "uptime": "00:00:00",
            "version": VERSION, "changed": False}
 
-    # 3. Wi-Fi. No usable creds, or a failed join, means the
+    # 2. Display FIRST (see the header: begin() refuses if the
+    # RTC bus or the radio has run before it). The panel sits
+    # begun and dark until the loop's first composed frame.
+    live = display.init()
+    app["display_state"] = "live" if live else "not live - headless"
+    if not live:
+        print("main: display not live - running headless "
+              "(admin still served)")
+    display.set_backlight(cfg["brightness"])
+
+    # 3. RTC -> system clock (local time from the first frame).
+    timekeep.init_rtc()
+
+    # 4. Wi-Fi. No usable creds, or a failed join, means the
     # setup portal - that is the rehoming contract.
     ssid, password = prov.load_creds()
     if not prov.creds_usable(ssid):
@@ -143,17 +158,11 @@ def main():
         prov.run_portal()  # never returns
     app["wifi"] = _wifi_str(wlan, ssid)
 
-    # 4. NTP - authority, but non-fatal: the RTC carries us.
+    # 5. NTP - authority, but non-fatal: the RTC carries us.
     timekeep.sync_ntp()
     app["time_source"] = timekeep.time_source()
 
-    # 5. Display, dial layer, figure rects.
-    live = display.init()
-    app["display_state"] = "live" if live else "not live - headless"
-    if not live:
-        print("main: display not live - running headless "
-              "(admin still served)")
-    display.set_backlight(cfg["brightness"])
+    # 6. Dial layer, figure rects.
     face_name = cfg.get("face", "painter")
     face_mod = _face_module(face_name)
     face_mod.render_static(display.dial())
@@ -161,7 +170,7 @@ def main():
     figmod.prepare(display.dial())
     print("main: figure prepared")
 
-    # 6. Admin + after-boot update check (flags only).
+    # 7. Admin + after-boot update check (flags only).
     admin.start()
     updater.check()
 
@@ -169,7 +178,7 @@ def main():
     show = showmod.Show(fig, display.dial())
     canvas = display.canvas()
 
-    # 7. The run loop.
+    # 8. The run loop.
     print("main: running")
     drawn_total = None      # total-minutes of the last drawn frame
     last_active_ms = boot_ms
