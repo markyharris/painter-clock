@@ -16,6 +16,16 @@
 # display layer with no display.py changes. The admin "face" config
 # key picks the module; switching faces re-runs render_static once.
 #
+# THE DATE (Nov 15, 2026, v11): every face shows the date - day
+# and month - unless the admin "show_date" config key is off
+# (Mark's requirement, FACES.md). The shared convention: main.py
+# hands each face module the setting via set_show_date(on) at
+# boot and on every settings change, and the face honours it in
+# compose(). Future faces implement the same two pieces
+# (set_show_date + honouring it in compose) and inherit the
+# rule. The painter draws its date per frame (draw_date below),
+# so midnight and toggles need no static re-render.
+#
 # Pure drawing + geometry: no driver imports (display.py owns the
 # panel), no state beyond the remembered static canvas. The drawing
 # surface is a display.Canvas. The dial and hands are drawn with
@@ -48,6 +58,68 @@ HOUR_W = 12           # hour hand: shorter and fatter
 # without restructuring draw_dial; glyphs are a future font pass,
 # until then NUMERALS=True still draws the tick dial.
 NUMERALS = False
+
+# The date line (v11): "Sun 15 Nov" in the dial's ink, upper
+# centre, drawn per frame by compose() when enabled - painted
+# on the glass like the hands, so NOT frost-veiled (figure.py's
+# veil is for the man behind the glass, not for what's painted
+# on it). Glyphs are the firmware framebuf's built-in 8x8 font
+# (framebuf.text). Rows DATE_Y..DATE_Y+7 sit in open cream:
+# clear of the rim ticks (their inner edge is y 35 at the top)
+# and of his cap even at the body's maximum rise (cap top
+# 158 - 39 = 119).
+DATE_Y = 104
+_WEEKDAYS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+_show_date = True        # admin "show_date" key; main.py drives
+
+
+def set_show_date(on):
+    """The face-module date convention (see the header): main.py
+    calls this with the admin setting at boot and whenever it
+    changes; compose() honours it from the next frame."""
+    global _show_date
+    _show_date = bool(on)
+
+
+def show_date():
+    return _show_date
+
+
+def _weekday_sun0(y, m, d):
+    """Day of week, 0 = Sunday - Sakamoto's algorithm, the same
+    computation timekeep.py keeps the RTC honest with, so the
+    printed weekday always agrees with the printed date (it is
+    computed from the date fields, never read off the tuple's
+    own weekday slot)."""
+    t = (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4)
+    if m < 3:
+        y -= 1
+    return (y + y // 4 - y // 100 + y // 400 + t[m - 1] + d) % 7
+
+
+def date_string(time_tuple):
+    """"Sun 15 Nov" for a localtime-style tuple ([0] year,
+    [1] month, [2] day of month). The day is unpadded."""
+    y, m, d = time_tuple[0], time_tuple[1], time_tuple[2]
+    return "%s %d %s" % (_WEEKDAYS[_weekday_sun0(y, m, d)], d,
+                         _MONTHS[m - 1])
+
+
+def draw_date(fb, time_tuple):
+    """The date, centred at DATE_Y in INK, through the band
+    windows like every other primitive - band-limited the same
+    way draw_hand is: only the band the glyphs touch is called
+    into (the glyphs live entirely in the top band)."""
+    s = date_string(time_tuple)
+    x = CX - (len(s) * 8) // 2
+    wins = list(fb.band_windows())
+    bh = wins[1][1] - wins[0][1] if len(wins) > 1 else 480
+    for win, y0 in wins:
+        if DATE_Y + 8 > y0 and DATE_Y < y0 + bh:
+            win.text(s, x, DATE_Y - y0, INK)
 
 
 def rgb565(r, g, b):
@@ -267,7 +339,8 @@ def render_static(canvas):
 
 def compose(canvas, time_tuple, state=None):
     """One frame of the painter face at time_tuple: static dial
-    copied in, then the hour and minute hands. state (optional)
+    copied in, then the date (when show_date is on), then the
+    hour and minute hands. state (optional)
     overrides for the show engine: {"dial": canvas, "hour_angle",
     "min_angle", "hour_reveal", "min_reveal"} - angles default to
     the time, reveals default to fully painted (1.0)."""
@@ -279,6 +352,8 @@ def compose(canvas, time_tuple, state=None):
     elif src is None:
         draw_dial(canvas)      # render_static never ran - draw direct
     total = time_tuple[3] * 60 + time_tuple[4]
+    if _show_date:
+        draw_date(canvas, time_tuple)
     draw_hand(canvas,
               state.get("hour_angle", hour_angle_stepped(total)),
               HOUR_LEN, HOUR_W, state.get("hour_reveal", 1.0))

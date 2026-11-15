@@ -10,10 +10,11 @@
 # Settings live in config.json on the board (never overwritten by
 # the updater). Saving settings sets app["changed"] = True;
 # main.py notices and applies what it can live (brightness, face,
-# frost).
+# frost, show_date).
 #
 # Config keys (Nov 15, 2026): face, brightness, frost (the
-# frosted-glass strength 0..100 - 0 is the sharp look), and the
+# frosted-glass strength 0..100 - 0 is the sharp look), show_date
+# (the date line every face draws - day and month; v11), and the
 # sleep keys - sleep_enabled / sleep_start / sleep_end. The sleep
 # BEHAVIOUR (lights out, he lies down; SPEC Nov 13 addendum)
 # lands in the next phase; the keys and this UI are here now so
@@ -43,6 +44,7 @@ DEFAULT_CONFIG = {
     "face": "painter",
     "brightness": 255,       # panel backlight, 0..255
     "frost": 55,             # frosted glass, 0..100 (0 = sharp)
+    "show_date": True,       # the date on the face (v11)
     "sleep_enabled": False,  # lights-out hours (behaviour: next phase)
     "sleep_start": "22:00",
     "sleep_end": "06:00",
@@ -100,6 +102,14 @@ def _face_options(current):
     return out
 
 
+def _show_date_options(current):
+    out = ""
+    for name, val in (("on", True), ("off", False)):
+        sel = " selected" if val == bool(current) else ""
+        out += '<option value="%s"%s>%s</option>' % (name, sel, name)
+    return out
+
+
 def _tryit_buttons():
     out = ""
     for name, label in TRYIT:
@@ -126,6 +136,7 @@ Idle: %s<br>
 Update: %s</p>
 <form method="POST" action="/settings">
 <p>Face: <select name="face">%s</select></p>
+<p>Show date: <select name="show_date">%s</select></p>
 <p>Brightness (0-255): <input name="brightness" size="4"
 value="%s"></p>
 <p>Frosted glass (0-100): <input name="frost" size="4"
@@ -156,7 +167,9 @@ This clock is a tribute, built with admiration.</i></p>
         app["time_str"], app["time_source"], app["wifi"],
         app["display_state"], app["uptime"], app["version"],
         app.get("idle_str", "-"), upd,
-        _face_options(cfg["face"]), cfg["brightness"], cfg["frost"],
+        _face_options(cfg["face"]),
+        _show_date_options(cfg.get("show_date", True)),
+        cfg["brightness"], cfg["frost"],
         "checked" if cfg["sleep_enabled"] else "",
         cfg["sleep_start"], cfg["sleep_end"], _tryit_buttons())
 
@@ -207,6 +220,8 @@ def step(app):
             cfg = app["config"]
             if form.get("face") in FACES:
                 cfg["face"] = form["face"]
+            if form.get("show_date") in ("on", "off"):
+                cfg["show_date"] = form["show_date"] == "on"
             try:
                 b = int(form.get("brightness", cfg["brightness"]))
                 if b < 0:

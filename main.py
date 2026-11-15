@@ -103,6 +103,16 @@ def _face_module(name):
     return __import__(mod_name)
 
 
+def _apply_date(face_mod, cfg):
+    """Hand the admin "show_date" setting to the face module -
+    the face contract's date convention (clockface.py header):
+    every face exposes set_show_date(on) and honours it in
+    compose(). A face without the setter simply has no date."""
+    setter = getattr(face_mod, "set_show_date", None)
+    if setter is not None:
+        setter(cfg.get("show_date", True))
+
+
 def _apply_sleep(show, cfg):
     """Hand the config's sleep hours to the show (idle life v1:
     the hours suppress random idle routines; the sleep
@@ -184,7 +194,9 @@ def main():
     # 6. Dial layer, figure rects.
     face_name = cfg.get("face", "painter")
     frost_now = cfg.get("frost", 55)
+    date_now = cfg.get("show_date", True)
     face_mod = _face_module(face_name)
+    _apply_date(face_mod, cfg)
     face_mod.render_static(display.dial())
     print("main: dial rendered (face: %s)" % face_name)
     figmod.prepare(display.dial(), frost_now)
@@ -259,10 +271,20 @@ def main():
             app["config"] = cfg
             _apply_sleep(show, cfg)
             display.set_backlight(cfg["brightness"])
+            if cfg.get("show_date", True) != date_now:
+                # date toggled: the painter draws it per frame,
+                # so this is just the flag - the next composed
+                # frame shows it or drops it, no re-render, no
+                # reboot, no ghost (frames are rebuilt whole)
+                date_now = cfg.get("show_date", True)
+                _apply_date(face_mod, cfg)
+                drawn_total = None  # force a repaint
+                print("main: show_date changed to %s" % date_now)
             if cfg.get("face", "painter") != face_name:
                 face_name = cfg.get("face", "painter")
                 frost_now = cfg.get("frost", 55)
                 face_mod = _face_module(face_name)
+                _apply_date(face_mod, cfg)
                 face_mod.render_static(display.dial())
                 figmod.prepare(display.dial(), frost_now)
                 drawn_total = None  # force a repaint
