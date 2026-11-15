@@ -63,6 +63,19 @@ IDLE_EVERY_RAND = 120000  # "roughly every 2-4 minutes" band,
 IDLE_MARGIN_MS = 1000     # a routine starts only if it ends at
                           # least this long before the boundary
 
+# The weight rock (Nov 15, 2026, v10 - Mark: "at minimum, he
+# needs to rock from one leg to the other as if impatiently
+# waiting"). Between shows the standing body target sways one
+# snap step each way on a ~4.6 s cycle: dwell on one leg, an
+# eased shift across, dwell on the other, shift back. It is an
+# intent (figure's sway_x), not a pose: the arms re-hang off
+# the moving shoulders by themselves. It runs only while he is
+# standing between shows - paused during shows and routines,
+# still during sleep hours - and main.py frames continuously
+# while he is awake precisely so the rock is on the glass.
+ROCK_AMP = 15             # px each way = one snap-grid step
+ROCK_CYCLE_MS = 4600      # dwell-shift-dwell-shift, ~4.6 s
+
 
 def ease(p):
     if p < 0:
@@ -122,7 +135,7 @@ _IDLE_NEUTRAL = {
     "behind": None, "core": None, "watch_min": None,
     "mug_home": True, "apple_bites": 0, "hanky_puff": 0.0,
     "bend": 0.0, "follow": 0.0, "tau_ms": 200, "head_tilt": 0.0,
-    "lean_in": 0.0,
+    "lean_in": 0.0, "sway_x": 0.0,
 }
 
 
@@ -174,10 +187,16 @@ def _env(p, a, b, c, d):
 def _idle_watch(sh, p):
     # LEFT arm rises bare-handed, the wristwatch on its wrist;
     # the watch's hands show the painted time (sh._total). The
-    # brush arm stays at his side.
+    # brush arm stays at his side. The wrist target sits out at
+    # his left, forearm raised (v10: the original target was
+    # ~5 px from the shoulder anchor - with the long v10 bones
+    # the doubled-up fold threw the elbow across his chest and
+    # buried the watch behind the hands' boss; out here the
+    # elbow hangs below the wrist and the watch sits visible
+    # on the raised forearm).
     fig = sh.fig
     _, head, hang_l, hang_r = sh._anchors()
-    wrist = (head[0] - 14, head[1] + 44)
+    wrist = (head[0] - 64, head[1] + 52)
     e = _env(p, 0.0, 0.22, 0.78, 1.0)
     fig.set_intent(tip_l=_lerp2(hang_l, wrist, e), follow=0.12,
                    prop_l="watch", watch_min=sh._total)
@@ -230,8 +249,13 @@ def _idle_sip(sh, p):
         tip_r = (tip_r[0], tip_r[1]
                  + math.sin((p - 0.55) / 0.13 * math.pi) * 2)
     held = 0.26 <= p < 0.84
-    follow = 0.55 if (p < 0.32 or p > 0.70) else 0.30
-    fig.set_intent(tip_r=tip_r, bend=bend, follow=follow,
+    # v10: follow is 0.30 throughout (was 0.55 around the grabs).
+    # Bent at the waist, his shoulder lands ~95 px right of his
+    # feet; stepping hard toward the mug carries the shoulder
+    # PAST it and out of arm's reach of the floor. The moderate
+    # follow lets the body SINK instead (the sink row does the
+    # reaching) - the grab is verified in test_reach.
+    fig.set_intent(tip_r=tip_r, bend=bend, follow=0.30,
                    prop_r="mug" if held else None,
                    mug_home=not held)
 
@@ -258,7 +282,7 @@ def _idle_rear(sh, p):
     # at his far hip and rubs up and down there.
     fig = sh.fig
     (fx, fy), head, hang_l, hang_r = sh._anchors()
-    back = (fx - 34, fy - 76)
+    back = (fx - 34, fy - figmod.HIP_H + 6)   # at his far hip
     if p < 0.30:
         tip_r = _path(p, [(0.0, hang_r), (0.30, back)])
     elif p <= 0.75:
@@ -329,7 +353,7 @@ def _idle_phone(sh, p):
     if 0.2 < p < 0.82:
         tip_r = (tip_r[0], tip_r[1]
                  + math.sin((p - 0.2) / 0.62 * 4 * math.pi) * 2.5)
-    gesture = (fx - 34, fy - 118)
+    gesture = (fx - 38, fy - figmod.SHOULDER_H + 55)  # chest height
     if 0.42 <= p <= 0.68:
         tip_l = _path(p, [(0.42, hang_l), (0.52, gesture),
                           (0.60, gesture), (0.68, hang_l)])
@@ -399,6 +423,13 @@ class Show:
         self.sleep_start = 0     # minutes of day (main.py sets)
         self.sleep_end = 0
         self._last_now = None
+        self._dt = 0             # last tick's dt (the rock clock)
+        self._rock_t = 0         # weight-rock phase clock, ms -
+                                 # advances only while standing
+        self.rock_on = True      # the desk tests turn this off to
+                                 # pin the rest pose; the board rocks
+        self.last_idle_name = None   # admin status line (v10):
+        self.last_idle_clock = None  # last routine + its HH:MM
 
     # --- show construction ---
 
@@ -439,11 +470,12 @@ class Show:
         self.idle = None
         self.plane_pos = None
         # the show pre-empts any routine: clear its intent fields
-        # so the hands are the show's from the first frame
+        # so the hands are the show's from the first frame (and
+        # the weight rock stops - he stands still to work)
         self.fig.set_intent(tip_l=None, tip_r=None, prop_l=None,
                             prop_r=None, cap_off=False, behind=None,
                             core=None, watch_min=None, mug_home=True,
-                            apple_bites=0, hanky_puff=0.0)
+                            apple_bites=0, hanky_puff=0.0, sway_x=0.0)
 
     # --- idle configuration (main.py / admin) ---
 
@@ -465,15 +497,50 @@ class Show:
             return True
         return False
 
-    def _sleeping(self):
+    def sleeping_at(self, total_minutes):
+        """True if the given minutes-of-day fall in the sleep
+        window (wrap-midnight aware). main.py asks this BEFORE
+        framing - it gates the loop's standing animation - so it
+        takes the time as a parameter; _sleeping() is the same
+        question for the last ticked time."""
         if not self.sleep_enabled:
             return False
-        s, e, t = self.sleep_start, self.sleep_end, self._total
+        s, e, t = self.sleep_start, self.sleep_end, total_minutes
         if s == e:
             return False
         if s < e:
             return s <= t < e
         return t >= s or t < e
+
+    def _sleeping(self):
+        return self.sleeping_at(self._total)
+
+    def idle_status(self, now_ms):
+        """One line for the admin status block (v10), so an idle
+        report is diagnosable at a glance: what is running, or
+        what ran last and when the next is due, or why nothing
+        is running. now_ms is a ticks_ms value; the countdown
+        uses ticks_diff wrap semantics (2**30) without importing
+        time - show.py stays clock-free."""
+        if self.idle is not None:
+            return "%s running" % self.idle["type"]
+        if self._sleeping():
+            return "suppressed (sleep hours)"
+        if self.tryit is not None:
+            s = "try-it queued: %s" % self.tryit
+        elif self.last_idle_name is not None:
+            s = "last %s at %s" % (self.last_idle_name,
+                                   self.last_idle_clock)
+        else:
+            s = "none yet"
+        if self.next_idle_at is not None:
+            d = (self.next_idle_at - now_ms) & 0x3FFFFFFF
+            if d >= 0x20000000:
+                d -= 0x40000000
+            if d < 0:
+                d = 0
+            s += ", next in ~%ds" % (d // 1000)
+        return s
 
     def demo(self, now_ms):
         """Run one full minute step on demand, from the currently
@@ -542,6 +609,7 @@ class Show:
             if dt > 250:
                 dt = 250     # a long stall eases in steps, not a leap
         self._last_now = now_ms
+        self._dt = dt
         if self.last_total is None:
             # first frame after boot: paint the current time, no show
             self.min_hand = {"angle": clockface.minute_angle(total_minutes),
@@ -665,10 +733,31 @@ class Show:
         self.idle = {"type": name, "start": now_ms,
                      "dur": IDLE_DUR[name]}
         self.last_idle_type = name
+        self.last_idle_name = name
+        self.last_idle_clock = "%02d:%02d" % (self._total // 60,
+                                              self._total % 60)
 
     def _rest_intent(self):
         self.fig.set_intent(**_IDLE_NEUTRAL)
         self.fig.set_intent(tau_ms=380)
+
+    def _rock_offset(self):
+        """The weight rock's sway target for the current phase:
+        dwell at -ROCK_AMP (0-.30 of the cycle), an eased shift
+        across (.30-.50), dwell at +ROCK_AMP (.50-.80), an eased
+        shift back (.80-1). The shifts cross centre mid-way, so
+        the drawn body steps -15 -> 0 -> +15 -> 0 as the snap
+        thresholds pass - a man shifting his weight, not a dance.
+        figure's own easing (tau 380 at rest) rounds what the
+        phase steps leave."""
+        p = (self._rock_t % ROCK_CYCLE_MS) / ROCK_CYCLE_MS
+        if p < 0.30:
+            return -float(ROCK_AMP)
+        if p < 0.50:
+            return -ROCK_AMP + 2 * ROCK_AMP * ease((p - 0.30) / 0.20)
+        if p < 0.80:
+            return float(ROCK_AMP)
+        return ROCK_AMP - 2 * ROCK_AMP * ease((p - 0.80) / 0.20)
 
     def _run_idle(self, now_ms):
         if self.idle is None:
@@ -700,6 +789,13 @@ class Show:
                             + (60 - self._sec) * 1000 + 2000
             if not started:
                 self._rest_intent()
+                # standing between shows: the weight rock. The
+                # phase clock advances only here, so the rock
+                # pauses for shows and routines and resumes where
+                # it left off; sleep hours stand him still.
+                if self.rock_on and not self._sleeping():
+                    self._rock_t += self._dt
+                    self.fig.set_intent(sway_x=self._rock_offset())
                 return
         p = (now_ms - self.idle["start"]) / self.idle["dur"]
         if p >= 1:

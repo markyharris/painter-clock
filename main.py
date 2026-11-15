@@ -20,14 +20,18 @@
 #   7. admin server + the updater's after-boot check (flag only)
 #   8. The run loop: show.Show driven by REAL local time
 #
-# The loop: show.update() composes a frame only when something
-# changed - a show running, an idle routine active, a minute
-# boundary crossed, or a short settle window after activity
-# (he eases home). Between routines the standing scene simply
-# holds on the panel; the loop sleeps in small slices and
+# The loop: while he is AWAKE, show.update() composes frames
+# continuously - he is always moving a little (the weight rock
+# and the breathing between shows, the shows and routines
+# themselves), so the standing scene is animated, not held.
+# During sleep hours the loop falls back to composing only
+# when something changed - a show running, an idle routine
+# active, a routine due or a try-it queued, a minute boundary
+# crossed, or a short settle window after activity (he eases
+# home). Either way the loop sleeps in small slices and
 # services the admin server every slice, so the page stays
-# responsive without burning frames. Housekeeping (update
-# check, NTP re-sync, gc) runs only while he is idle.
+# responsive. Housekeeping (update check, NTP re-sync, gc)
+# runs only while he is idle.
 #
 # Fail soft everywhere: no NTP -> run from the RTC; display not
 # live -> keep painting into the canvases and serving admin.
@@ -145,7 +149,8 @@ def main():
     app = {"config": cfg, "time_str": "--:--:--",
            "time_source": timekeep.time_source(), "wifi": "",
            "display_state": "starting", "uptime": "00:00:00",
-           "version": VERSION, "changed": False, "tryit": None}
+           "version": VERSION, "changed": False, "tryit": None,
+           "idle_str": "-"}
 
     # 2. Display FIRST (see the header: begin() refuses if the
     # RTC bus or the radio has run before it). The panel sits
@@ -205,13 +210,16 @@ def main():
         loc = timekeep.now_tuple()
         total = loc[3] * 60 + loc[4]
 
-        # Compose only when something changed: a show or idle
-        # routine in progress, a routine due or a try-it queued
-        # (the scheduler must be serviced on its own timing, not
-        # only in post-show settle windows), a minute boundary
-        # crossed since the last drawn frame, or the settle
-        # window after activity (he is still easing home).
-        active = (show.running or show.idle is not None
+        # Compose a frame when: he is awake (the standing rock
+        # and breathing animate him between shows - v10), a show
+        # or idle routine is in progress, a routine is due or a
+        # try-it queued (the scheduler must be serviced on its
+        # own timing, not only in post-show settle windows), a
+        # minute boundary crossed since the last drawn frame, or
+        # the settle window after activity (he is still easing
+        # home). During sleep hours only the event terms apply.
+        active = (not show.sleeping_at(total)
+                  or show.running or show.idle is not None
                   or show.tryit is not None
                   or (show.next_idle_at is not None
                       and time.ticks_diff(now_ms,
@@ -237,6 +245,7 @@ def main():
             app["time_source"] = timekeep.time_source()
             app["uptime"] = _uptime_str(boot_ms)
             app["wifi"] = _wifi_str(wlan, ssid)
+            app["idle_str"] = show.idle_status(now_ms)
 
         admin.step(app)
         if app.get("tryit") is not None:

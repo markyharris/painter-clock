@@ -67,20 +67,61 @@ import display
 
 # --- rig constants (480-scale, px) ---
 HOME_FEET = (240, 446)
-SHOULDER_H = 152                 # shoulder height above feet
-HEAD_H = 187                     # head centre height above feet
-                                 # (was 199 - Mark, Nov 15: the
-                                 # neck read too long; the head
-                                 # now sits 12 px closer to the
-                                 # shoulders in both poses)
+SHOULDER_H = 221                 # shoulder height above feet
+HEAD_H = 266                     # head centre height above feet
 HOME_SHOULDER = (244, HOME_FEET[1] - SHOULDER_H)
 BUCKET = (332, 436)
 SHOULDER_CLAMP_X = 106           # shoulder may stray this far from home x
-HIP_H = 81                       # hip pivot height above feet (the bend)
-ARM_L1 = 48                      # upper arm
-ARM_L2 = 47                      # forearm - total reach 95
-REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 93
-BEND_RAD = 1.02                  # waist fold at bend == 1 (~58 deg)
+HIP_H = 90                       # hip pivot height above feet (the bend)
+ARM_L1 = 82                      # upper arm
+ARM_L2 = 78                      # forearm - total reach 160
+REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 158
+ARM_MIN_D = abs(ARM_L1 - ARM_L2)  # 4: targets closer than this
+                                 # to the shoulder are inside the
+                                 # bones' difference - unreachable;
+                                 # ik() lands the hand at this
+                                 # distance along the ray instead
+BEND_RAD = 0.66                  # waist fold at bend == 1 (~38 deg;
+                                 # v10: was 1.02 / ~58 deg - with
+                                 # the taller torso's longer lever
+                                 # (176 px hip-to-head vs 106) the
+                                 # old angle threw his head past
+                                 # the bucket and read as a fall,
+                                 # not a bend. At 0.66 the head
+                                 # lands over the bucket and both
+                                 # dips still reach - test_reach)
+BODY_RISE = 39                   # the drawn body may rise this far
+                                 # toward high work (feet leave the
+                                 # floor line upward)...
+BODY_SINK = 20                   # ...and sink this far toward low
+                                 # work (see update()'s clamp).
+                                 # v10 values, desk-chosen: the long
+                                 # arms reach the top tips with the
+                                 # rise at 39 (52 in v9 - the sweep
+                                 # is unchanged), which keeps the
+                                 # stand grid at v9's 65 rects and
+                                 # prepare() at v9's time.
+
+# TALLER FIGURE (Nov 15, 2026, v10 - Mark: "make him taller. The
+# center of the clock arms should be on his chest, not his face."):
+# the v9 figure stood 212 px cap-to-boots with his face centre at
+# y 259 - the dial pivot (240, 240) landed INSIDE the face ellipse
+# (236..282), so the hands' boss sat on his forehead. The growth
+# is torso + legs + arms, head art untouched (same ellipse, cap
+# and face offsets - the character Mark approved): HEAD_H
+# 187 -> 266 (face centre y 259 -> 180), SHOULDER_H 152 -> 221
+# (shoulders y 294 -> 225, so the pivot crosses his UPPER CHEST,
+# 15 px below the shoulder line), HIP_H 81 -> 90 (hips y 365 ->
+# 356), arms 48/47 -> 82/78 (he is taller; his arms grew with
+# him - and the longer reach is what lets the cloth and brush
+# actually touch the hand tips: the v9 sweep's worst settled
+# hand-to-frontier gap was 73 px at the 12 o'clock minute tip,
+# the new sweep's is a few px - test_reach.py). Feet and bucket
+# do not move: the floor is where it was. Cap top lands at
+# y 158 and total height at 291 px: the brief's ~130 / ~340
+# estimates would need the head itself ~1.5x taller, which
+# would break the approved head - face/shoulders/hips/pivot
+# were the priorities and all land on target.
 
 # arm anchors and rest targets, relative to the DRAWN body: the
 # anchors sit just inside the torso's top corners (the sprite's
@@ -95,7 +136,10 @@ BEND_RAD = 1.02                  # waist fold at bend == 1 (~58 deg)
 SHOULDER_DX = 19                 # anchor |x| from the body centre
 HANG_OUT = 8                     # hand target this far outboard
                                  # of its shoulder anchor...
-HANG_DY = 84                     # ...and this far below it
+HANG_DY = 152                    # ...and this far below it (v10:
+                                 # with the longer torso this puts
+                                 # the hanging hands at upper-thigh
+                                 # height, just below the hip line)
 
 # colours (RGB565 via clockface.rgb565)
 OVERALLS = clockface.rgb565(51, 80, 126)
@@ -232,9 +276,20 @@ def _frost_state(frost):
 # interact). Rects that do reach the bucket - the dip, the
 # rightmost standing columns - keep the union compositing.
 STAND_XS = (-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90)
-STAND_YS = (-52, -39, -26, -13, 0)
+STAND_YS = (-39, -26, -13, 0, 13)
 DIP_XS = (0, 13, 26)
-DIP_YS = (-26, -11, 5)
+DIP_YS = (-11, 5, 18)
+# v10: STAND_YS gains the +13 row and DIP_YS the +18 row - the
+# drawn body may now SINK toward low work (BODY_SINK in update())
+# as well as rise toward high work, and the grids must cover the
+# clamp range or the snap would pin him a row short. The sink is
+# half of how the taller figure's brush reaches the 6 o'clock
+# frontier (see the rig note at the constants). DIP_YS drops its
+# -26 row in exchange: during a fold-in the body has already
+# eased most of the way down from any wipe height before the
+# bend crosses 0.5 and the dip sprite takes over, and the counts
+# land back on v9's (65 stand + 9 dip) - the taller rects cost
+# ~1 MB more cache, but prepare() stays at v9's ~4.2 s.
 _GRIDS = {"stand": (STAND_XS, STAND_YS), "dip": (DIP_XS, DIP_YS)}
 
 
@@ -250,7 +305,7 @@ def _snap(v, grid):
     return best
 
 
-def ik(sx, sy, tx, ty, cx=None):
+def ik(sx, sy, tx, ty, cx=None, hint=None):
     """Two-bone IK. Returns (elbow_x, elbow_y, hand_x, hand_y) with
     the target clamped to REACH_MAX - the arm cannot stretch.
     cx is the body centreline x for the elbow choice (defaults to
@@ -259,13 +314,28 @@ def ik(sx, sy, tx, ty, cx=None):
     the elbow bowing AWAY from the body - at v1's 0.15 weight the
     inward candidate won hanging arms by a few px of "lower" (the
     inward perpendicular dips lower when the arm line leans
-    outward), which is half of how the rest pose crossed."""
+    outward), which is half of how the rest pose crossed.
+
+    hint (v10): the arm's previous elbow point. When given, the
+    candidate NEARER the hint wins instead of the scored one -
+    elbow continuity. The score alone flips its choice whenever
+    a moving target carries the two candidates' scores past each
+    other, and the elbow then teleports by ~2h in one frame
+    (measured up to ~160 px: during the plain minute show, and
+    in most idle routines - the hand never jumps, only the fold,
+    which is why stills never showed it). Tracking the previous
+    elbow keeps one fold branch per arm; the branches only meet
+    where the arm is straight (h ~ 0), where switching is free.
+    pose() re-seeds with the scored choice at the plain hang, so
+    the rest pose is always the approved outward bow."""
     if cx is None:
         cx = clockface.CX
     dx = tx - sx
     dy = ty - sy
     d = math.sqrt(dx * dx + dy * dy)
     if d < 1:
+        if dx == 0 and dy == 0:
+            dx = 1.0     # target on the anchor: pick a ray
         d = 1
     if d > REACH_MAX:
         tx = sx + dx / d * REACH_MAX
@@ -273,6 +343,18 @@ def ik(sx, sy, tx, ty, cx=None):
         dx = tx - sx
         dy = ty - sy
         d = REACH_MAX
+    elif d < ARM_MIN_D:
+        # inside the reachable annulus: with unequal bones the
+        # hand cannot come closer than |L1 - L2| to the shoulder
+        # (v9's 48/47 bones hid this inside 1 px; the v10 bones
+        # differ by 4, and the watch routine's wrist target sits
+        # ~5 px from its anchor - one step nearer and the cosine
+        # rule's h went imaginary and the elbow teleported)
+        tx = sx + dx / d * ARM_MIN_D
+        ty = sy + dy / d * ARM_MIN_D
+        dx = tx - sx
+        dy = ty - sy
+        d = ARM_MIN_D
     a = (ARM_L1 * ARM_L1 - ARM_L2 * ARM_L2 + d * d) / (2 * d)
     h2 = ARM_L1 * ARM_L1 - a * a
     h = math.sqrt(h2) if h2 > 0 else 0
@@ -288,7 +370,12 @@ def ik(sx, sy, tx, ty, cx=None):
     def score(e):
         return e[1] + abs(e[0] - cx) * 0.5
 
-    elbow = e1 if score(e1) >= score(e2) else e2
+    if hint is not None:
+        d1 = (e1[0] - hint[0]) ** 2 + (e1[1] - hint[1]) ** 2
+        d2 = (e2[0] - hint[0]) ** 2 + (e2[1] - hint[1]) ** 2
+        elbow = e1 if d1 <= d2 else e2
+    else:
+        elbow = e1 if score(e1) >= score(e2) else e2
     return (elbow[0], elbow[1], tx, ty)
 
 
@@ -450,17 +537,22 @@ def _draw_torso(views, fig, feet, bend, pal, sil=False):
     def bp(x, y):
         return fig._bend_point(x, y, bend, feet)
 
-    # boots and legs - never bent (the bend is at the waist)
+    # boots and legs - never bent (the bend is at the waist).
+    # The leg tops and the pelvis ride on HIP_H (v10: they were
+    # literals cut for HIP_H 81/90-era geometry; deriving them
+    # keeps the pelvis on the hip pivot whatever HIP_H is).
     _ellipse_v(views, fx - 10, fy - 2, 12, 5, pal[_P_BOOT])
     _ellipse_v(views, fx + 13, fy - 2, 12, 5, pal[_P_BOOT])
-    _poly_v(views, _quad(fx - 19, fy - 86, fx - 5, fy - 86,
-                         fx - 6, fy - 2, fx - 20, fy - 2),
+    _poly_v(views, _quad(fx - 19, fy - HIP_H + 4, fx - 5,
+                         fy - HIP_H + 4, fx - 6, fy - 2,
+                         fx - 20, fy - 2),
             pal[_P_OVDK])
-    _poly_v(views, _quad(fx + 5, fy - 86, fx + 19, fy - 86,
-                         fx + 20, fy - 2, fx + 6, fy - 2),
+    _poly_v(views, _quad(fx + 5, fy - HIP_H + 4, fx + 19,
+                         fy - HIP_H + 4, fx + 20, fy - 2,
+                         fx + 6, fy - 2),
             pal[_P_OVDK])
     # pelvis (the torso's bent bottom edge overlaps this)
-    _fill_rect_v(views, int(fx) - 20, int(fy) - 90, 40, 14,
+    _fill_rect_v(views, int(fx) - 20, int(fy) - HIP_H, 40, 14,
                  pal[_P_OV])
     # torso: shirt everywhere, overalls over the lower part, with
     # the bib line at 30% and two straps up to the shoulders
@@ -776,6 +868,9 @@ class Figure:
         self.feet_x, self.feet_y = HOME_FEET
         self.body_x, self.body_y = HOME_FEET  # drawn body origin
         self.sh_x, self.sh_y = HOME_SHOULDER
+        self._elb_hint = {"l": None, "r": None}  # elbow continuity
+                                 # (see ik's hint): the last elbow
+                                 # point per arm, tracked by pose()
         self.bend = 0.0          # 0..1, waist bend envelope (dip)
         self.bob = 0.0           # breathing bob, px
         self.bucket_x = BUCKET[0]  # the bucket can be rearranged
@@ -786,6 +881,12 @@ class Figure:
             "tip": None,         # (x, y) the working hand must reach
             "tool": None,        # "brush" (right hand) | "cloth" |
                                  # "hand" (bare left hand) | None
+            "sway_x": 0.0,       # standing weight-rock offset, px
+                                 # (v10: show.py's oscillator feeds
+                                 # this between shows; the desired
+                                 # shoulder shifts by it, so the
+                                 # body rocks leg to leg and the
+                                 # arms re-hang off the shoulders)
             "follow": 0.0,
             "tau_ms": 380,
             "bend": 0.0,
@@ -831,6 +932,7 @@ class Figure:
             des_y = HOME_SHOULDER[1] + (tip[1] - HOME_SHOULDER[1]) * f
         else:
             des_x, des_y = HOME_SHOULDER
+        des_x += self.intent["sway_x"]
         # keep him on the dial
         lo = clockface.CX - SHOULDER_CLAMP_X
         hi = clockface.CX + SHOULDER_CLAMP_X
@@ -845,19 +947,23 @@ class Figure:
         # The drawn body follows the eased shoulder horizontally
         # in full (he steps sideways), but vertically only within
         # a clamp: the body is rigid, so it rises toward high work
-        # by at most 52 px (feet stay on the dial) and never sinks
-        # through the floor. pose() derives the arm anchors from
-        # this drawn body (snapped to the rect grid), so the arms
-        # stay glued to the visible shoulders at any reach; the
-        # IK clamp absorbs whatever travel the clamp withheld.
+        # by at most BODY_RISE px and sinks toward low work by at
+        # most BODY_SINK (v10: the sink used to be 6 px - with the
+        # taller figure's shoulders 69 px higher, the 6 o'clock
+        # frontier needed the extra crouch; his boots stay inside
+        # the dial's cream at full sink). pose() derives the arm
+        # anchors from this drawn body (snapped to the rect grid),
+        # so the arms stay glued to the visible shoulders at any
+        # reach; the IK clamp absorbs whatever travel the clamp
+        # withheld.
         moving = abs(des_x - self.sh_x) + abs(des_y - self.sh_y)
         step_bob = 2.0 if moving > 6 else 0.0
         self.bob = math.sin(now_ms / 900.0) * 1.0 + step_bob  # breathing
         dy = self.sh_y - HOME_SHOULDER[1]
-        if dy < -52:
-            dy = -52
-        if dy > 6:
-            dy = 6
+        if dy < -BODY_RISE:
+            dy = -BODY_RISE
+        if dy > BODY_SINK:
+            dy = BODY_SINK
         self.body_x = self.sh_x - 4
         self.body_y = HOME_FEET[1] + dy + self.bob
         self.feet_x = self.body_x
@@ -919,7 +1025,9 @@ class Figure:
         hang_r = (sh_r[0] + HANG_OUT, sh_r[1] + HANG_DY)
         hang_l = (sh_l[0] - HANG_OUT, sh_l[1] + HANG_DY)
         if bd >= 1.0:
-            hang_l = (fx - 18, fy - 60)  # knee brace
+            # knee brace: on the thigh above the knee (derived
+            # from HIP_H - the thigh's upper third)
+            hang_l = (fx - 18, fy - HIP_H + 30)
         hand_r = hang_r
         hand_l = hang_l
         if tip is not None and tool == "brush":
@@ -928,12 +1036,28 @@ class Figure:
             hand_l = tip
         # idle routines override per hand (their targets span the
         # whole routine, hang to hang, so nothing ever teleports)
+        over_r = tip is not None and tool == "brush"
+        over_l = tip is not None and tool in ("cloth", "hand")
         if self.intent["tip_r"] is not None:
             hand_r = self.intent["tip_r"]
+            over_r = True
         if self.intent["tip_l"] is not None:
             hand_l = self.intent["tip_l"]
-        elb_r = ik(sh_r[0], sh_r[1], hand_r[0], hand_r[1], fx)
-        elb_l = ik(sh_l[0], sh_l[1], hand_l[0], hand_l[1], fx)
+            over_l = True
+        # elbow continuity (ik's hint): track each arm's fold
+        # branch while it is working; at the plain hang (no
+        # override, no bend) re-seed from the score, so the rest
+        # pose always returns to the approved outward bow
+        hint_r = self._elb_hint["r"] if over_r or bd >= 1.0 \
+            else None
+        hint_l = self._elb_hint["l"] if over_l or bd >= 1.0 \
+            else None
+        elb_r = ik(sh_r[0], sh_r[1], hand_r[0], hand_r[1], fx,
+                   hint_r)
+        elb_l = ik(sh_l[0], sh_l[1], hand_l[0], hand_l[1], fx,
+                   hint_l)
+        self._elb_hint["r"] = (elb_r[0], elb_r[1])
+        self._elb_hint["l"] = (elb_l[0], elb_l[1])
         return {
             "feet": feet,
             "shoulder_r": sh_r, "shoulder_l": sh_l,

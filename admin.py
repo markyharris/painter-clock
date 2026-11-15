@@ -122,6 +122,7 @@ def _page(app):
 <p>Time: %s (source: %s)<br>
 Wi-Fi: %s<br>
 Display: %s &middot; Uptime: %s &middot; Code: %s<br>
+Idle: %s<br>
 Update: %s</p>
 <form method="POST" action="/settings">
 <p>Face: <select name="face">%s</select></p>
@@ -153,7 +154,8 @@ the man behind the glass who paints the time, minute by minute.
 This clock is a tribute, built with admiration.</i></p>
 </body></html>""" % (
         app["time_str"], app["time_source"], app["wifi"],
-        app["display_state"], app["uptime"], app["version"], upd,
+        app["display_state"], app["uptime"], app["version"],
+        app.get("idle_str", "-"), upd,
         _face_options(cfg["face"]), cfg["brightness"], cfg["frost"],
         "checked" if cfg["sleep_enabled"] else "",
         cfg["sleep_start"], cfg["sleep_end"], _tryit_buttons())
