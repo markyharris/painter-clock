@@ -314,11 +314,94 @@ def _ensure_canvases():
         _dial = Canvas(bytearray(FRAME_BYTES))
 
 
+def _try_bring_up(b):
+    """One guarded init()+begin() cycle on board object b - the
+    exact cold-boot call sequence, prints included. Returns True
+    iff both report success. Never raises."""
+    try:
+        if not b.init():
+            print("display: Board.init() returned False")
+            return False
+        if not b.begin():
+            print("display: Board.begin() returned False")
+            return False
+    except Exception as exc:
+        print("display: board bring-up failed:", exc)
+        return False
+    return True
+
+
+def _try_deinit(b):
+    """Guarded deinit() with a console trace - the recovery
+    sequence's teardown step. Never raises."""
+    try:
+        print("display: recovery: deinit() ->", b.deinit())
+    except Exception as exc:
+        print("display: recovery: deinit() raised:", exc)
+
+
+def _recover(Board, b):
+    """Warm-reboot recovery (v17): the panel keeps power across a
+    chip-only reset, so on the boot after an admin Restart or an
+    updater reboot the first begin() fails - the panel was already
+    begun by the previous run - and until now only ~10 s unplugged
+    revived it. The binding exposes no reset or power lever (and
+    this board wires no LCD reset line: LCD_RST_IO is -1 in the
+    board config, the TCA9554 only carries the ST7701 chip-select),
+    so the recovery is the binding's own teardown cycles, cheapest
+    first, each guarded and named on the console:
+
+      1. deinit() + init() + begin() on the same object - unwinds
+         whatever the failed begin() half-started.
+      2. A brand-new Board object - drops any wedged C++ state.
+      3. A fresh object cycled twice (init, deinit, init, begin).
+
+    Bounded: exactly those three attempts, then give up and return
+    None - the caller runs headless, exactly as before this fix.
+    Returns a live board object on success."""
+    import time
+    print("display: recovery 1/3: deinit + init + begin, same board")
+    _try_deinit(b)
+    time.sleep_ms(100)
+    if _try_bring_up(b):
+        print("display: recovery 1/3 worked")
+        return b
+    print("display: recovery 2/3: fresh Board object")
+    try:
+        b2 = Board()
+    except Exception as exc:
+        print("display: recovery 2/3: Board() raised:", exc)
+        b2 = None
+    if b2 is not None and _try_bring_up(b2):
+        print("display: recovery 2/3 worked")
+        return b2
+    print("display: recovery 3/3: fresh board, double init cycle")
+    try:
+        b3 = Board()
+    except Exception as exc:
+        print("display: recovery 3/3: Board() raised:", exc)
+        return None
+    try:
+        b3.init()
+    except Exception:
+        pass
+    _try_deinit(b3)
+    time.sleep_ms(100)
+    if _try_bring_up(b3):
+        print("display: recovery 3/3 worked")
+        return b3
+    print("display: recovery exhausted - panel stays dark; "
+          "unplug for 10 s to revive (as before)")
+    return None
+
+
 def init():
     """Bring the panel up through the esp_panel binding. Returns
     True if the real driver is live; False (with the canvases still
     fully usable) on stock firmware or any bring-up failure, so the
-    rest of the app can run headless in Thonny."""
+    rest of the app can run headless in Thonny. If the normal
+    cold-boot bring-up fails, the warm-reboot recovery (_recover)
+    runs first - it never runs on a healthy cold boot."""
     global _board, _live
     _ensure_canvases()
     if _live:
@@ -330,15 +413,13 @@ def init():
         return False
     try:
         b = Board()
-        if not b.init():
-            print("display: Board.init() returned False")
-            return False
-        if not b.begin():
-            print("display: Board.begin() returned False")
-            return False
     except Exception as exc:
         print("display: board bring-up failed:", exc)
         return False
+    if not _try_bring_up(b):
+        b = _recover(Board, b)
+        if b is None:
+            return False
     _board = b
     _live = True
     b.set_backlight(_backlight)
