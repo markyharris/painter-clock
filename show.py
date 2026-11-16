@@ -27,6 +27,17 @@
 # frost_clear state and lean_in intent are carried so the ritual
 # drops in without an API change. On the hour both hands are still
 # fully wiped and repainted (the hour hand steps then anyway).
+#
+# SLEEP (Nov 15, 2026, v15): in the admin sleep hours (set_sleep)
+# the scene is the night one - he lies down (figure.draw_sleep
+# over clockface's night dial) and the machine's whole job is
+# the minute SNAP: no shows, no routines, no rock; at each
+# boundary both hands jump to the new time (drawn pale by
+# compose's night state) and last_total follows, so the v12
+# monotonic accounting holds through the night and the wake
+# boundary starts a normal show. A queued try-it is DEFERRED
+# by sleep - it stays queued and fires at the first gap after
+# the wake. Entry cancels a running show/routine outright.
 import math
 import random
 
@@ -456,6 +467,8 @@ class Show:
         self.sleep_enabled = False  # sleep hours suppress idles
         self.sleep_start = 0     # minutes of day (main.py sets)
         self.sleep_end = 0
+        self.asleep = False      # v15: the sleep scene owns the
+                                 # display while True (tick-driven)
         self._last_now = None
         self._dt = 0             # last tick's dt (the rock clock)
         # weight-rock state (v14): a two-phase machine - dwell
@@ -520,10 +533,10 @@ class Show:
     # --- idle configuration (main.py / admin) ---
 
     def set_sleep(self, enabled, start_min, end_min):
-        """Sleep hours, as minutes of day. While sleeping, no
-        random routine starts (a queued try-it still runs - it
-        is an explicit request, and the sleep BEHAVIOUR is a
-        later phase; this only quiets the idle life)."""
+        """Sleep hours, as minutes of day. While the window is
+        active the sleep scene owns the display (v15): no shows,
+        no routines, a queued try-it is deferred to the wake -
+        see tick()'s sleep path."""
         self.sleep_enabled = bool(enabled)
         self.sleep_start = start_min
         self.sleep_end = end_min
@@ -585,8 +598,9 @@ class Show:
     def demo(self, now_ms):
         """Run one full minute step on demand, from the currently
         displayed minute to the next. Returns False if no time has
-        been set yet (update() never called)."""
-        if self.last_total is None or self.running:
+        been set yet (update() never called) or he is asleep -
+        no shows in the sleep window, not even bench ones."""
+        if self.last_total is None or self.running or self.asleep:
             return False
         from_total = self.last_total
         self.start_show(from_total, from_total + 1, now_ms)
@@ -611,6 +625,21 @@ class Show:
         ext = _days_from_civil(time_tuple[0], time_tuple[1],
                                time_tuple[2]) * 1440 + total
         self.tick(now_ms, ext)
+        if self.asleep:
+            # the night frame (v15): the NIGHT static layer,
+            # the lying scene over it (breath + Z's), then the
+            # hands + date in pale ink (compose's night state).
+            # The standing figure is not drawn at all.
+            canvas.copy_from(figmod.sleep_night_canvas())
+            self.fig.draw_sleep(canvas, now_ms)
+            clockface.compose(canvas, time_tuple, {
+                "dial": canvas, "night": True,
+                "hour_angle": self.hour_hand["angle"],
+                "min_angle": self.min_hand["angle"],
+                "hour_reveal": self.hour_hand["reveal"],
+                "min_reveal": self.min_hand["reveal"],
+            })
+            return self.fig.pose()
         # 1. the static dial layer
         if self.dial is not None:
             canvas.copy_from(self.dial)
@@ -638,6 +667,18 @@ class Show:
                               self.plane_pos[1])
         return pose
 
+    def _snap_hands(self, total_minutes):
+        """Both hands AT the given (day-extended) total's time,
+        fully revealed: the first frame's paint, and the sleep
+        hours' minute snap (v15). The angle functions are exact
+        on extended totals - 1440 is a whole number of hour
+        steps (v12)."""
+        self.min_hand = {"angle": clockface.minute_angle(total_minutes),
+                         "reveal": 1.0}
+        self.hour_hand = {
+            "angle": clockface.hour_angle_stepped(total_minutes),
+            "reveal": 1.0}
+
     # --- per-frame advance (no drawing) ---
 
     def tick(self, now_ms, total_minutes):
@@ -662,13 +703,54 @@ class Show:
                 dt = 250     # a long stall eases in steps, not a leap
         self._last_now = now_ms
         self._dt = dt
+        # --- sleep (v15): transitions, then the night shift ---
+        sleeping = self._sleeping()
+        if sleeping and not self.asleep:
+            # ENTER (window start, enabling mid-window, or a
+            # boot inside the window): the scene replaces
+            # whatever he was doing at this frame - a running
+            # show or routine is cancelled outright, the intent
+            # goes neutral, and the hands snap to now. No show
+            # plays for the entry minute either.
+            self.asleep = True
+            self.running = False
+            self.idle = None
+            self.plane_pos = None
+            self._rest_intent()
+            self._snap_hands(total_minutes)
+            self.last_total = total_minutes
+        elif not sleeping and self.asleep:
+            # EXIT (window end, or sleep switched off): the
+            # hands are already correct - they snapped all
+            # night and last_total tracked every boundary - so
+            # normal operation simply resumes below; the next
+            # boundary crossing starts a normal show.
+            self.asleep = False
+        if self.asleep:
+            # The night's whole accounting: at each boundary
+            # the hands SNAP to the new time and last_total
+            # follows, so the v12 monotonic invariant holds
+            # through the window and across midnight, the
+            # date rolls over in compose as ever, and a
+            # mid-sleep NTP step (either way) just re-snaps.
+            # A due idle time is pushed out 30 s at a time -
+            # main.py frames while a routine is due, and a due
+            # time left in the past would keep its loop awake
+            # all night (the v9 re-arm, moved here).
+            if self.last_total is None:
+                self._snap_hands(total_minutes)
+                self.last_total = total_minutes
+            elif total_minutes != self.last_total:
+                self._snap_hands(total_minutes)
+                self.last_total = total_minutes
+            if self.next_idle_at is not None \
+                    and now_ms >= self.next_idle_at:
+                self.next_idle_at = now_ms + 30000
+            self.fig.update(dt, now_ms)
+            return
         if self.last_total is None:
             # first frame after boot: paint the current time, no show
-            self.min_hand = {"angle": clockface.minute_angle(total_minutes),
-                             "reveal": 1.0}
-            self.hour_hand = {
-                "angle": clockface.hour_angle_stepped(total_minutes),
-                "reveal": 1.0}
+            self._snap_hands(total_minutes)
             self.last_total = total_minutes
         elif total_minutes > self.last_total and not self.running:
             # forward only: a demo minute or an NTP step backwards

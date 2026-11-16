@@ -15,10 +15,9 @@
 # Config keys (Nov 15, 2026): face, brightness, frost (the
 # frosted-glass strength 0..100 - 0 is the sharp look), show_date
 # (the date line every face draws - day and month; v11), and the
-# sleep keys - sleep_enabled / sleep_start / sleep_end. The sleep
-# BEHAVIOUR (lights out, he lies down; SPEC Nov 13 addendum)
-# lands in the next phase; the keys and this UI are here now so
-# the hours are already set when it does. The old skeleton's
+# sleep keys - sleep_enabled / sleep_start / sleep_end, whose
+# behaviour (lights out, he lies down, the hands snap pale;
+# SPEC Nov 13 addendum) landed in v15. The old skeleton's
 # night_mode / night_dim checkbox fields are gone, and so is
 # tz_offset_h: the timezone is fixed UTC-7 in timekeep.py.
 import json
@@ -45,7 +44,7 @@ DEFAULT_CONFIG = {
     "brightness": 255,       # panel backlight, 0..255
     "frost": 55,             # frosted glass, 0..100 (0 = sharp)
     "show_date": True,       # the date on the face (v11)
-    "sleep_enabled": False,  # lights-out hours (behaviour: next phase)
+    "sleep_enabled": False,  # lights-out hours (v15 behaviour)
     "sleep_start": "22:00",
     "sleep_end": "06:00",
 }
@@ -145,8 +144,8 @@ value="%s"></p>
 Lights out - he sleeps</label> from
 <input name="sleep_start" size="5" value="%s"> to
 <input name="sleep_end" size="5" value="%s"> (HH:MM, 24h)<br>
-<i>The sleep behaviour arrives in the next build; the hours are
-saved now so they're ready.</i></p>
+<i>In those hours the room goes dark and he lies down to
+sleep; the hands keep time in pale ink.</i></p>
 <p><button type="submit">Save settings</button></p></form>
 <h3>Idle routines - try one</h3>
 <form method="POST" action="/tryit"><p>%s</p></form>

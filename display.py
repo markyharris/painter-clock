@@ -10,6 +10,9 @@
 #     init() -> bool        panel up, backlight on; False = no driver
 #     canvas()              the frame Canvas (draw the next frame here)
 #     dial()                the static-layer Canvas (rendered once)
+#     night_dial()          the NIGHT static-layer Canvas (v15 sleep:
+#                           lazily allocated - a clock that never
+#                           sleeps never pays for it)
 #     show()                present the frame canvas (banded, below)
 #     set_backlight(level)  0..255
 #     is_live() -> bool     True once the real driver is running
@@ -295,6 +298,12 @@ _live = False          # True once the real driver is running
 _backlight = 255
 _frame = None          # Canvas: the frame being composed
 _dial = None           # Canvas: the pre-rendered static layer
+_night = None          # Canvas: the night static layer (v15) -
+                       # separate from _dial on purpose: the day
+                       # layer and figure's rects over it stay
+                       # untouched across a night's sleep, so the
+                       # wake transition is instant (no re-render,
+                       # no rect rebuild)
 
 
 def _ensure_canvases():
@@ -356,6 +365,18 @@ def dial():
     once; compose() copies it into the frame canvas per frame."""
     _ensure_canvases()
     return _dial
+
+
+def night_dial():
+    """The NIGHT static-layer Canvas (v15): the painter face's
+    render_night() draws the dark dial here, once, and sleep
+    frames copy from it exactly the way day frames copy dial().
+    Allocated lazily on first use - 460,800 B of PSRAM only a
+    sleeping clock ever spends."""
+    global _night
+    if _night is None:
+        _night = Canvas(bytearray(FRAME_BYTES))
+    return _night
 
 
 def make_framebuffer(buf, w, h, stride=None):

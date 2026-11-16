@@ -233,6 +233,34 @@ MUG_HOME = (292, 443)   # the enamel mug lives on the floor by
                         # drawn there per frame until the sip
                         # routine's hand takes it (see draw())
 
+# --- the sleep scene (Nov 15, 2026, v15) ---
+# In the admin sleep hours he lies down along the bottom of
+# the dial and sleeps (the full behaviour: show.py owns the
+# state machine, clockface owns the night dial, the pose lives
+# here). The scene is ONE baked rect over the night dial -
+# prepare_sleep() below, the same rect discipline as the
+# standing poses but a single fixed pose, no snap grid: he
+# does not travel in his sleep. The colours are the scene's
+# own night set, used RAW whatever the frost setting is: the
+# frost veils the man behind his glass by day; the night
+# scene is the room with its light off, and is not veiled.
+# Only two things move, both drawn per frame over the baked
+# rect (draw_sleep): the blanket's breathing swell and the
+# three Z's drifting up from his head.
+BLANKET = clockface.rgb565(166, 74, 44)      # rust
+BLANKET_DK = clockface.rgb565(120, 51, 31)
+PILLOW = clockface.rgb565(172, 178, 194)
+PILLOW_LT = clockface.rgb565(200, 205, 218)
+SLP_SKIN = clockface.rgb565(186, 148, 124)   # skin, lamp off
+SLP_DARK = clockface.rgb565(43, 38, 34)      # closed eye / mouth
+SLP_HEAD = (170, 396)          # the lying head's centre
+BREATH_MS = 4000               # one breath, ms (~4 s)
+ZZZ_CYCLE_MS = 4800            # one Z's rise, ms; three Z's
+                               # ride the cycle a third apart
+ZZZ_COLS = (clockface.PALE, clockface.rgb565(148, 152, 166),
+            clockface.rgb565(78, 86, 116))   # fade steps toward
+                               # the night ground as a Z rises
+
 # --- the palette the draw functions consume ---
 # _draw_body / _draw_bucket / Figure.draw never touch the raw
 # constants above directly; they index a palette tuple, so
@@ -1299,6 +1327,43 @@ class Figure:
                                            cy - 8, 2),
                        pal[_P_STEM])
 
+    def draw_sleep(self, canvas, now_ms):
+        """One sleep frame of the man onto the frame canvas
+        (v15): the baked lying rect (band blits, like draw()),
+        then the two per-frame movements - the blanket's
+        breathing swell and the drifting Z's. The canvas must
+        already hold the NIGHT dial (show.py copies it in
+        before calling). The swell is drawn in the blanket's
+        own colour: only its silhouette moves, a hump over the
+        chest that rises ~4 px and settles on a ~4 s cycle -
+        the blanket breathing, not a patch of light. The Z's
+        are per-pixel writes (a few hundred at most), stepped
+        in scale and faded through ZZZ_COLS as they rise -
+        cartoon Z's have always moved in steps."""
+        nd = sleep_night_canvas()
+        prepare_sleep(nd)
+        for win, y0 in canvas.band_windows():
+            hit = _sleep_bands.get(y0 // display.BAND_H)
+            if hit is not None:
+                src, bx, by = hit
+                win.blit(src, bx, by)
+        b = (math.sin(now_ms * 2 * math.pi / BREATH_MS
+                      - math.pi / 2) + 1) / 2     # 0..1, slow
+        _band_ellipse(canvas, 258, 404 - int(b + 0.5), 52,
+                      9 + int(b * 3 + 0.5), BLANKET)
+        offs = _z_offsets()
+        cyc = now_ms % ZZZ_CYCLE_MS
+        for i in range(3):
+            p = ((cyc + i * (ZZZ_CYCLE_MS // 3)) % ZZZ_CYCLE_MS) \
+                / ZZZ_CYCLE_MS
+            scale = 1 if p < 0.34 else (2 if p < 0.67 else 3)
+            col = ZZZ_COLS[0] if p < 0.55 else \
+                (ZZZ_COLS[1] if p < 0.8 else ZZZ_COLS[2])
+            zx = int(198 + p * 26)
+            zy = int(368 - p * 60)
+            for ox, oy in offs[scale]:
+                canvas.pixel(zx + ox, zy + oy, col)
+
 
 # --- idle prop drawing (per frame, palette colours - veiled) ---
 
@@ -1393,3 +1458,126 @@ def draw_plane(canvas, x, y):
     _band_poly(canvas, _quad(x - 17, y - 1, x - 12, y - 1,
                              x - 10, y - 7, x - 15, y - 7), PLANE_COL)
     _band_ellipse(canvas, x + 18, y, 2, 6, PLANE_COL)
+
+
+# --- the sleep scene: art, bake, Z's (Nov 15, 2026, v15) ---
+
+_sleep_bands = None    # the lying rect's {band: (fb, bx, by)}
+_sleep_key = None      # (id(night dial), its fingerprint)
+_sleep_box = None      # the rect's canvas box (cost reporting)
+_night = None          # the rendered night-dial canvas
+_z_offs = None         # {scale: [(dx, dy), ...]} for the Z glyph
+
+
+def sleep_night_canvas():
+    """The night dial canvas, rendered on first use: display's
+    lazy night layer + clockface's night dial drawn into it.
+    The painter face's sleep path is the only caller - a clock
+    that never sleeps never allocates or renders any of it."""
+    global _night
+    if _night is None:
+        nd = display.night_dial()
+        clockface.render_night(nd)
+        _night = nd
+    return _night
+
+
+def _draw_sleep_body(views):
+    """The lying figure in canvas coords, through the view
+    helpers (so prepare_sleep can measure its extent with an
+    empty view list, exactly like the standing poses). He lies
+    along the dial's bottom on the same floor line his boots
+    stand on (y ~446): pillow at the left, head resting on it
+    turned ~81 degrees from upright - in the flat art: the
+    head's long axis horizontal, face in three-quarter view
+    with a CLOSED eye - cap OFF, the cap itself on the floor
+    by the pillow, body under the rust blanket, boots out the
+    far end. Drawn in the raw night colours: no palette, no
+    halo, no frost (see the constants note)."""
+    # pillow, under the head
+    _ellipse_v(views, 148, 412, 38, 13, PILLOW)
+    _ellipse_v(views, 148, 405, 30, 9, PILLOW_LT)
+    # his cap, off, on the floor beside the pillow
+    _ellipse_v(views, 94, 432, 15, 10, CAP)
+    _poly_v(views, _quad(102, 437, 134, 437, 136, 442, 100, 442),
+            CAP_DK)
+    # boots out the blanket's far end (drawn first - the
+    # blanket's edge tucks over the ankle stubs)
+    _poly_v(views, _quad(382, 411, 397, 413, 399, 421, 384, 420),
+            BOOT)
+    _ellipse_v(views, 405, 418, 13, 5, BOOT)
+    _poly_v(views, _quad(384, 425, 399, 426, 401, 434, 386, 433),
+            BOOT)
+    _ellipse_v(views, 407, 431, 13, 5, BOOT)
+    # neck, then the blanket over the body: main fall, the
+    # shoulder lump under its head end, the rounded top roll,
+    # the shaded lower fall, one soft fold
+    _poly_v(views, _quad(184, 390, 202, 394, 204, 406, 188, 405),
+            SLP_SKIN)
+    _poly_v(views, _quad(190, 404, 392, 410, 392, 442, 190, 442),
+            BLANKET)
+    _ellipse_v(views, 208, 401, 19, 9, SHIRT)
+    _ellipse_v(views, 290, 406, 104, 11, BLANKET)
+    _fill_rect_v(views, 190, 430, 202, 12, BLANKET_DK)
+    _poly_v(views, _quad(298, 413, 305, 413, 305, 438, 298, 438),
+            BLANKET_DK)
+    # the head, resting on the pillow: skin, hair over the
+    # top/back (no cap), a closed eye and a small mouth
+    hx, hy = SLP_HEAD
+    _ellipse_v(views, hx, hy, 21, 19, SLP_SKIN)
+    _ellipse_v(views, hx - 6, hy - 11, 20, 10, HAIR)
+    _fill_rect_v(views, hx + 6, hy - 2, 9, 2, SLP_DARK)
+    _fill_rect_v(views, hx + 14, hy + 7, 6, 2, SLP_DARK)
+
+
+def prepare_sleep(night_dial):
+    """Bake the sleep rect over the night dial: the lying
+    figure composited into one opaque rect (dial -> body, the
+    _rect_views machinery the standing poses use), keyed on
+    the night dial's canvas + fingerprint like prepare().
+    One rect, no grid - and NO halo pass and no veiled
+    palette: the night scene is not frosted, whatever the
+    configured frost (see the constants note)."""
+    global _sleep_bands, _sleep_key, _sleep_box, _track
+    key = (id(night_dial), _dial_fingerprint(night_dial))
+    if _sleep_bands is not None and _sleep_key == key:
+        return
+    _track = [9999, 9999, -9999, -9999]
+    _draw_sleep_body(())
+    box = _padded_box(2)
+    _track = None
+    _sleep_box = box
+    views, bands = _rect_views(night_dial, box[0], box[1],
+                               box[2] - box[0] + 1,
+                               box[3] - box[1] + 1)
+    _draw_sleep_body(views)
+    _sleep_bands = bands
+    _sleep_key = key
+
+
+def _z_offsets():
+    """The 'Z' glyph's set pixels at scales 1..3, as
+    {scale: [(dx, dy), ...]} - built once from the firmware
+    font through a small scratch FrameBuffer (the date
+    strip's trick), then drawn per frame as plain pixel
+    writes in the fade colour of the moment: no strip ground
+    to match, so a Z can cross any part of the night scene."""
+    global _z_offs
+    if _z_offs is not None:
+        return _z_offs
+    sfb = display.make_framebuffer(bytearray(8 * 8 * 2), 8, 8)
+    sfb.fill(0)
+    sfb.text("Z", 0, 0, 0xFFFF)
+    offs = {}
+    for scale in (1, 2, 3):
+        pts = []
+        for sy in range(8):
+            for sx in range(8):
+                if sfb.pixel(sx, sy):
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            pts.append((sx * scale + dx,
+                                        sy * scale + dy))
+        offs[scale] = pts
+    _z_offs = offs
+    return offs

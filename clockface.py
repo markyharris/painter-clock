@@ -114,7 +114,10 @@ def date_string(time_tuple):
                          _MONTHS[m - 1])
 
 
-_strip = None        # (string, strip bytes, strip width) cache
+_strips = {}         # (string, colour, ground) -> (bytes, width):
+                     # the day strip and the pale night strip are
+                     # separate entries; each is rebuilt only when
+                     # its string changes - once a day
 
 
 def _pat(colour):
@@ -123,48 +126,56 @@ def _pat(colour):
     return bytes((colour & 0xFF, (colour >> 8) & 0xFF))
 
 
-def _date_strip(s):
+def _date_strip(s, colour, ground):
     """The date string at DATE_SCALE, as an opaque strip
     (bytes, width). The 8x8 font is drawn once into a small
     scratch FrameBuffer (80x8 at most - nowhere near the
     full-size FrameBuffer the firmware wedges on), then each
     set pixel grows to a DATE_SCALE square. The strip's
-    ground is CREAM: the dial under the box is plain cream
-    (the box's farthest corner sits ~194 px from centre,
-    inside the 233 cream disc, clear of ticks and of his
-    cap), so copying the strip in opaquely is pixel-exact.
-    Rebuilt only when the string changes - once a day."""
-    global _strip
-    if _strip is not None and _strip[0] == s:
-        return _strip[1], _strip[2]
+    ground is the dial colour under the box (CREAM by day,
+    NIGHT_GROUND by night): the dial under the box is plain
+    ground (the box's farthest corner sits ~194 px from
+    centre, inside the 233 disc, clear of ticks and of his
+    cap), so copying the strip in opaquely is pixel-exact."""
+    key = (s, colour, ground)
+    hit = _strips.get(key)
+    if hit is not None:
+        return hit
     w1 = len(s) * 8
     sfb = framebuf.FrameBuffer(bytearray(w1 * 16), w1, 8,
                                framebuf.RGB565)
-    sfb.fill(CREAM)
-    sfb.text(s, 0, 0, INK)
+    sfb.fill(ground)
+    sfb.text(s, 0, 0, colour)
     w = w1 * DATE_SCALE
-    strip = bytearray(_pat(CREAM) * (w * DATE_H))
-    ink = _pat(INK) * DATE_SCALE
+    strip = bytearray(_pat(ground) * (w * DATE_H))
+    ink = _pat(colour) * DATE_SCALE
     for sy in range(8):
         for sx in range(w1):
-            if sfb.pixel(sx, sy) == INK:
+            if sfb.pixel(sx, sy) == colour:
                 for dy in range(DATE_SCALE):
                     do = ((sy * DATE_SCALE + dy) * w
                           + sx * DATE_SCALE) * 2
                     strip[do:do + DATE_SCALE * 2] = ink
-    _strip = (s, bytes(strip), w)
-    return _strip[1], _strip[2]
+    _strips[key] = (bytes(strip), w)
+    return _strips[key]
 
 
-def draw_date(fb, time_tuple):
-    """The date, centred at DATE_Y in INK: the cached scaled
-    strip copied into the frame buffer row by row (the
-    Canvas.blit slice pattern - 24 slice copies, no window
-    needed). The glyph box (rows 88..111) still lives
-    entirely in the top band; the minute hand crosses it and
-    is drawn after, exactly as at 1x."""
+def draw_date(fb, time_tuple, colour=None, ground=None):
+    """The date, centred at DATE_Y: the cached scaled strip
+    copied into the frame buffer row by row (the Canvas.blit
+    slice pattern - 24 slice copies, no window needed). The
+    glyph box (rows 88..111) still lives entirely in the top
+    band; the minute hand crosses it and is drawn after,
+    exactly as at 1x. By night the strip is PALE on
+    NIGHT_GROUND - same box, same slices. (Defaults resolve
+    in the body: INK/CREAM are defined below in the module,
+    and def-time defaults would not see them.)"""
+    if colour is None:
+        colour = INK
+    if ground is None:
+        ground = CREAM
     s = date_string(time_tuple)
-    strip, w = _date_strip(s)
+    strip, w = _date_strip(s, colour, ground)
     x = CX - w // 2
     buf = fb.buf
     row = w * 2
@@ -182,6 +193,19 @@ CREAM_SHADE = rgb565(232, 225, 208)
 RIM = rgb565(58, 52, 44)          # dark rim ring
 TICK = rgb565(120, 112, 96)
 INK = rgb565(26, 24, 22)          # painted-hand black
+
+# The night dial (Nov 15, 2026, v15 - sleep mode): the same dial
+# with the room's light off. Deep blue-black ground, a shade ring
+# only just lighter, ticks faint blue-grey ghosts of themselves,
+# and the hands + date in PALE - #e9e2cf, lamplight paper - the
+# only bright thing in the room. render_night() draws this into
+# display.night_dial(); the day layer is never touched, so dawn
+# costs no re-render.
+PALE = rgb565(233, 226, 207)          # #e9e2cf
+NIGHT_GROUND = rgb565(10, 13, 26)     # deep blue-black
+NIGHT_SHADE = rgb565(19, 24, 42)
+NIGHT_RIM = rgb565(3, 4, 8)
+NIGHT_TICK = rgb565(54, 66, 100)
 
 
 def point_at(angle_deg, dist):
@@ -333,14 +357,21 @@ def _tick_coords(ang, r0, r1, w):
     return array("h", [int(round(v)) for v in pts])
 
 
-def draw_dial(fb):
+def draw_dial(fb, night=False):
     """The static layer: rim, cream face, ticks - 60 minute ticks,
     longer hour ticks, longest at the quarters. Ticks only (see
     NUMERALS above). Rendered ONCE into the dial canvas at boot (or
     on a face switch) and copied under every frame - it never
     changes while this face is selected. Drawn band by band with C
     framebuf primitives (fill/ellipse/poly) through band_windows();
-    the same drawing in Python loops took 54 s on the board."""
+    the same drawing in Python loops took 54 s on the board.
+    night=True draws the same geometry in the night palette
+    (v15): the sleep layer, rendered once into its own canvas."""
+    if night:
+        rim, shade, ground, tick = NIGHT_RIM, NIGHT_SHADE, \
+            NIGHT_GROUND, NIGHT_TICK
+    else:
+        rim, shade, ground, tick = RIM, CREAM_SHADE, CREAM, TICK
     r1 = DIAL_R - 8
     ticks = []
     i = 0
@@ -355,12 +386,12 @@ def draw_dial(fb):
         ticks.append(_tick_coords(ang, r0, r1, w))
         i += 1
     for win, y0 in fb.band_windows():
-        win.fill(RIM)
+        win.fill(rim)
         win.ellipse(CX, CY - y0, DIAL_R + 6, DIAL_R + 6,
-                    CREAM_SHADE, True)
-        win.ellipse(CX, CY - y0, DIAL_R, DIAL_R, CREAM, True)
+                    shade, True)
+        win.ellipse(CX, CY - y0, DIAL_R, DIAL_R, ground, True)
         for coords in ticks:
-            win.poly(0, -y0, coords, TICK, True)
+            win.poly(0, -y0, coords, tick, True)
 
 
 def minute_angle(total_minutes):
@@ -376,6 +407,7 @@ def hour_angle_stepped(total_minutes):
 # --- the face-module API (contract in the header) ---
 
 _static = None        # the canvas render_static() last drew into
+_night_static = None  # the canvas render_night() last drew into
 
 
 def render_static(canvas):
@@ -388,13 +420,29 @@ def render_static(canvas):
     return canvas
 
 
+def render_night(canvas):
+    """Draw the NIGHT static layer into canvas
+    (display.night_dial()) - the sleep scene's dial (v15). A
+    painter-face extra beyond the base contract: only the
+    painter has a night, and only its sleep path calls this.
+    The day layer is never touched."""
+    global _night_static
+    draw_dial(canvas, night=True)
+    _night_static = canvas
+    return canvas
+
+
 def compose(canvas, time_tuple, state=None):
     """One frame of the painter face at time_tuple: static dial
     copied in, then the date (when show_date is on), then the
     hour and minute hands. state (optional)
     overrides for the show engine: {"dial": canvas, "hour_angle",
     "min_angle", "hour_reveal", "min_reveal"} - angles default to
-    the time, reveals default to fully painted (1.0)."""
+    the time, reveals default to fully painted (1.0). The sleep
+    path passes "night": True (v15): the date and the hands are
+    drawn in PALE on the night ground instead of INK on cream -
+    the caller has already laid the night layer + sleep scene
+    and passes "dial": canvas as usual."""
     if state is None:
         state = {}
     src = state.get("dial", _static)
@@ -403,12 +451,17 @@ def compose(canvas, time_tuple, state=None):
     elif src is None:
         draw_dial(canvas)      # render_static never ran - draw direct
     total = time_tuple[3] * 60 + time_tuple[4]
+    night = state.get("night", False)
     if _show_date:
-        draw_date(canvas, time_tuple)
+        if night:
+            draw_date(canvas, time_tuple, PALE, NIGHT_GROUND)
+        else:
+            draw_date(canvas, time_tuple)
+    ink = PALE if night else INK
     draw_hand(canvas,
               state.get("hour_angle", hour_angle_stepped(total)),
-              HOUR_LEN, HOUR_W, state.get("hour_reveal", 1.0))
+              HOUR_LEN, HOUR_W, state.get("hour_reveal", 1.0), ink)
     draw_hand(canvas,
               state.get("min_angle", minute_angle(total)),
-              MIN_LEN, MIN_W, state.get("min_reveal", 1.0))
+              MIN_LEN, MIN_W, state.get("min_reveal", 1.0), ink)
     return canvas

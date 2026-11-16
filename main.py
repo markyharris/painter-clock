@@ -24,14 +24,15 @@
 # continuously - he is always moving a little (the weight rock
 # and the breathing between shows, the shows and routines
 # themselves), so the standing scene is animated, not held.
-# During sleep hours the loop falls back to composing only
-# when something changed - a show running, an idle routine
-# active, a routine due or a try-it queued, a minute boundary
-# crossed, or a short settle window after activity (he eases
-# home). Either way the loop sleeps in small slices and
-# services the admin server every slice, so the page stays
-# responsive. Housekeeping (update check, NTP re-sync, gc)
-# runs only while he is idle.
+# During sleep hours (v15: the sleep scene - he lies down and
+# the hands snap pale each minute) the loop composes on the
+# sleep cadence - about a frame a second, which the breathing
+# swell and the drifting Z's are drawn for - plus the usual
+# event terms (a minute boundary crossed, a try-it queued, a
+# short settle window after activity). Either way the loop
+# sleeps in small slices and services the admin server every
+# slice, so the page stays responsive. Housekeeping (update
+# check, NTP re-sync, gc) runs only while he is idle.
 #
 # Fail soft everywhere: no NTP -> run from the RTC; display not
 # live -> keep painting into the canvases and serving admin.
@@ -68,6 +69,12 @@ JOIN_TIMEOUT_MS = 15000   # ~15 s, then the portal (rehoming)
 LOOP_MS = 25              # idle slice; admin is serviced per slice
 SETTLE_MS = 1500          # keep framing this long after activity
 HOUSEKEEP_MS = 5000       # housekeeping cadence while idle
+SLEEP_FRAME_MS = 1000     # sleep-scene cadence (v15): a frame
+                          # about every second all night - the
+                          # breathing and Z cycles are drawn in
+                          # steps sized for it, and the minute
+                          # snap lands within a second of the
+                          # boundary
 
 
 def join_wifi(ssid, password):
@@ -114,9 +121,9 @@ def _apply_date(face_mod, cfg):
 
 
 def _apply_sleep(show, cfg):
-    """Hand the config's sleep hours to the show (idle life v1:
-    the hours suppress random idle routines; the sleep
-    behaviour itself is a later phase)."""
+    """Hand the config's sleep hours to the show: in the window
+    the sleep scene owns the display (v15 - he lies down, the
+    hands snap pale, routines and shows stop)."""
     def mins(s):
         try:
             return int(s[0:2]) * 60 + int(s[3:5])
@@ -216,6 +223,7 @@ def main():
     drawn_total = None      # total-minutes of the last drawn frame
     last_active_ms = boot_ms
     last_housekeep = boot_ms
+    last_sleep_ms = boot_ms  # last frame composed while asleep
     last_status_s = -1
     while True:
         now_ms = time.ticks_ms()
@@ -229,7 +237,9 @@ def main():
         # own timing, not only in post-show settle windows), a
         # minute boundary crossed since the last drawn frame, or
         # the settle window after activity (he is still easing
-        # home). During sleep hours only the event terms apply.
+        # home). During sleep hours the event terms apply, plus
+        # the sleep cadence (v15): the sleeping scene breathes
+        # and drifts its Z's on a ~1 s frame rhythm.
         active = (not show.sleeping_at(total)
                   or show.running or show.idle is not None
                   or show.tryit is not None
@@ -238,7 +248,10 @@ def main():
                                           show.next_idle_at) >= 0)
                   or total != drawn_total
                   or time.ticks_diff(now_ms, last_active_ms)
-                  < SETTLE_MS)
+                  < SETTLE_MS
+                  or (show.sleeping_at(total)
+                      and time.ticks_diff(now_ms, last_sleep_ms)
+                      >= SLEEP_FRAME_MS))
         if active:
             try:
                 show.update(canvas, now_ms, loc)
@@ -246,6 +259,8 @@ def main():
             except Exception as exc:
                 print("main: frame failed:", exc)
             drawn_total = total
+            if show.sleeping_at(total):
+                last_sleep_ms = now_ms
             if show.running or show.idle is not None:
                 last_active_ms = now_ms
 
