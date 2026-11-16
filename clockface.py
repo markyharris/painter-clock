@@ -94,6 +94,42 @@ def show_date():
     return _show_date
 
 
+# --- the backlight (Nov 16, 2026, v18) ---
+# PAINTED light, not the panel's: a soft warm pool baked into
+# the DAY dial behind the standing man, so he reads as lit
+# from within the case, the way Baas's Schiphol figure is.
+# The admin "backlight" key (0..100, config default 50) drives
+# it through set_backlight() - the same convention as the date
+# above: main.py applies the config at boot and on every
+# change, and render_static() re-bakes the dial. The module
+# default is 0 (no glow) until main applies the config, so
+# any path that never sets it renders the pre-v18 dial
+# exactly. figure.py's rim light reads the same setting via
+# prepare()'s backlight argument - the two halves of the
+# effect are tuned by the one slider.
+_backlight = 0           # applied strength, 0..100
+
+
+def set_backlight(value):
+    """Apply the admin "backlight" strength (0..100). Takes
+    effect at the next render_static() - the glow lives in
+    the static layer, so per-frame cost never changes."""
+    global _backlight
+    try:
+        v = int(value)
+    except Exception:
+        return
+    if v < 0:
+        v = 0
+    if v > 100:
+        v = 100
+    _backlight = v
+
+
+def backlight():
+    return _backlight
+
+
 def _weekday_sun0(y, m, d):
     """Day of week, 0 = Sunday - Sakamoto's algorithm, the same
     computation timekeep.py keeps the RTC honest with, so the
@@ -206,6 +242,93 @@ NIGHT_GROUND = rgb565(10, 13, 26)     # deep blue-black
 NIGHT_SHADE = rgb565(19, 24, 42)
 NIGHT_RIM = rgb565(3, 4, 8)
 NIGHT_TICK = rgb565(54, 66, 100)
+
+# The backlight glow (v18): a warm-white pool in the day dial,
+# centred behind the standing figure (his body spans roughly
+# y 158..470, cap to boots, about x 240). The geometry is
+# CONTAINED in the ground disc: centre (240, 290), radius 180 -
+# the farthest glow point sits 50 + 180 = 230 px from the dial
+# centre, inside DIAL_R (233), so the glow can never tint the
+# shade ring or the rim. The date box (rows 88..111) is 179 px
+# from the glow centre at its nearest - the raised-cosine
+# falloff there is ~0.0001, so the ground under the date strip
+# stays CREAM to the last bit and the strip's opaque ground
+# stays pixel-exact. The ticks are drawn AFTER the glow, crisp
+# on top of it, like the hands.
+GLOW_CX = 240
+GLOW_CY = 290
+GLOW_R = 180
+GLOW_WARM = (255, 234, 192)     # 888 warm white the ground
+                                # mixes toward - the warmth is
+                                # mostly the blue falling away
+GLOW_PEAK = 0.85                # centre mix at strength 100
+
+# 4x4 Bayer matrix for the glow's ordered dither (see
+# _paint_glow): the threshold that dissolves the gradient's
+# quantisation steps into texture.
+_BAYER4 = ((0, 8, 2, 10), (12, 4, 14, 6),
+           (3, 11, 1, 9), (15, 7, 13, 5))
+
+
+def _paint_glow(buf, strength):
+    """Paint the glow into a dial buffer (480x480 RGB565 LE -
+    the Canvas's own bytes), per pixel, with ordered
+    dithering. Why not filled-ellipse rings, the dial's usual
+    C primitives? The whole colour journey from cream to warm
+    is only ~5 blue / ~2 red / ~2 green LSBs of RGB565, so
+    ANY solid-colour stepping - rings at any fineness - rounds
+    into a handful of hard-edged concentric bands: a target,
+    not a glow (first desk preview, v18). The cure is the
+    classic one: compute the ideal colour per pixel as
+    floats in 565 space and quantise with a Bayer threshold,
+    so each step dissolves into a fine checker texture the
+    eye blends back into a gradient. The falloff is
+    (1 - t^2)^2 over the squared distance - zero slope at
+    centre and edge, and no sqrt per pixel (one per row, for
+    the chord). ~102k pixels, render-time only: the dial
+    render is already a seconds-scale, on-change cost
+    (figure.prepare() is ~4 s on the board), and frames copy
+    the finished layer - per-frame cost is unchanged."""
+    s = strength / 100.0 * GLOW_PEAK
+    r2 = float(GLOW_R * GLOW_R)
+    # channel endpoints as floats in 565 units: the cream
+    # ground (decoded from CREAM itself) and the warm target
+    cr = (CREAM >> 11) & 0x1F
+    cg = (CREAM >> 5) & 0x3F
+    cb = CREAM & 0x1F
+    tr = GLOW_WARM[0] * 31.0 / 255.0
+    tg = GLOW_WARM[1] * 63.0 / 255.0
+    tb = GLOW_WARM[2] * 31.0 / 255.0
+    dr = (tr - cr) * s
+    dg = (tg - cg) * s
+    db = (tb - cb) * s
+    y = GLOW_CY - GLOW_R
+    while y <= GLOW_CY + GLOW_R:
+        dy = y - GLOW_CY
+        rem = GLOW_R * GLOW_R - dy * dy
+        if rem >= 0:
+            half = int(math.sqrt(rem))
+            brow = _BAYER4[y & 3]
+            row = y * 960
+            x = GLOW_CX - half
+            while x <= GLOW_CX + half:
+                dx = x - GLOW_CX
+                u = (dx * dx + dy * dy) / r2
+                f = 1.0 - u
+                f = f * f
+                if f > 0.005:
+                    thr = (brow[x & 3] + 0.5) / 16.0
+                    col = ((int(cr + dr * f + thr) << 11)
+                           | (int(cg + dg * f + thr) << 5)
+                           | int(cb + db * f + thr))
+                    i = row + x * 2
+                    lo = col & 0xFF
+                    hi = (col >> 8) & 0xFF
+                    if buf[i] != lo or buf[i + 1] != hi:
+                        buf[i] = lo
+                        buf[i + 1] = hi
+                x += 1
+        y += 1
 
 
 def point_at(angle_deg, dist):
@@ -366,12 +489,22 @@ def draw_dial(fb, night=False):
     framebuf primitives (fill/ellipse/poly) through band_windows();
     the same drawing in Python loops took 54 s on the board.
     night=True draws the same geometry in the night palette
-    (v15): the sleep layer, rendered once into its own canvas."""
+    (v15): the sleep layer, rendered once into its own canvas.
+    The day dial also carries the backlight glow (v18) at the
+    applied strength - a backlight change re-runs this render,
+    exactly like a face switch does."""
     if night:
         rim, shade, ground, tick = NIGHT_RIM, NIGHT_SHADE, \
             NIGHT_GROUND, NIGHT_TICK
     else:
         rim, shade, ground, tick = RIM, CREAM_SHADE, CREAM, TICK
+    # the backlight glow is a DAY behaviour (v18): the night
+    # dial is the room with its light off and never glows.
+    # Strength 0 skips it entirely - the pre-v18 dial, byte
+    # for byte. It is painted per pixel into the buffer
+    # BETWEEN the ground pass and the tick pass (see
+    # _paint_glow for why it is not drawn with primitives).
+    glow = not night and _backlight > 0
     r1 = DIAL_R - 8
     ticks = []
     i = 0
@@ -390,6 +523,9 @@ def draw_dial(fb, night=False):
         win.ellipse(CX, CY - y0, DIAL_R + 6, DIAL_R + 6,
                     shade, True)
         win.ellipse(CX, CY - y0, DIAL_R, DIAL_R, ground, True)
+    if glow:
+        _paint_glow(fb.buf, _backlight)
+    for win, y0 in fb.band_windows():
         for coords in ticks:
             win.poly(0, -y0, coords, tick, True)
 

@@ -51,6 +51,14 @@
 # and the cuckoo's clear-circle patch will draw the head sharp
 # the same way - see _draw_head).
 #
+# BACKLIGHT (Nov 16, 2026, v18): the "backlight" config key
+# paints light behind him - a warm glow baked into the day
+# dial (clockface) plus a warm rim pass on his silhouette,
+# baked here with the halo's mechanics and layered inside it.
+# At backlight=0 neither half draws: the pre-v18 picture,
+# pixel for pixel. The sleep scene is untouched (it has its
+# own raw night colours, no palette, no rim).
+#
 # IDLE LIFE (Nov 15, 2026): show.py's routines drive both hands
 # through intent tip_l / tip_r (full hang-to-hang paths) and hang
 # props on them (intent prop_l / prop_r, cap_off, behind, core,
@@ -307,13 +315,13 @@ _pal = _RAW_PALETTE              # palette for _frost (set by
 _halo_r = 0                      # halo dilation radius, px
 
 
-def _mix565(colour, f):
-    """A RGB565 colour mixed toward FROST_TINT by f (0..1). The
-    mix happens in 888 and converts back through rgb565(); the
-    raw palette was built with that same function, so the mix is
-    hue-true to the original colours (checked on skin / shirt /
-    overalls in the desk previews - they pale and cool, they do
-    not shift hue)."""
+def _mix565_to(colour, target, f):
+    """A RGB565 colour mixed toward an 888 target by f (0..1).
+    The mix happens in 888 and converts back through rgb565();
+    the raw palette was built with that same function, so the
+    mix is hue-true to the original colours (checked on skin /
+    shirt / overalls in the desk previews - they pale and cool,
+    they do not shift hue)."""
     if f <= 0.0:
         return colour
     r5 = (colour >> 11) & 0x1F
@@ -323,9 +331,15 @@ def _mix565(colour, f):
     g8 = (g6 << 2) | (g6 >> 4)
     b8 = (b5 << 3) | (b5 >> 2)
     return clockface.rgb565(
-        int(r8 + (FROST_TINT[0] - r8) * f + 0.5),
-        int(g8 + (FROST_TINT[1] - g8) * f + 0.5),
-        int(b8 + (FROST_TINT[2] - b8) * f + 0.5))
+        int(r8 + (target[0] - r8) * f + 0.5),
+        int(g8 + (target[1] - g8) * f + 0.5),
+        int(b8 + (target[2] - b8) * f + 0.5))
+
+
+def _mix565(colour, f):
+    """A RGB565 colour mixed toward FROST_TINT by f (0..1) -
+    the frost veil's mix, on _mix565_to's path."""
+    return _mix565_to(colour, FROST_TINT, f)
 
 
 def _frost_state(frost):
@@ -339,6 +353,44 @@ def _frost_state(frost):
     f = frost / 100.0 * _VEIL
     return tuple(_mix565(c, f) for c in _RAW_PALETTE), \
         (1 if frost < 75 else 2)
+
+# --- backlight rim (Nov 16, 2026, v18) ---
+# The dial half of the backlight lives in clockface (the glow
+# baked into the day dial); this is the figure half: a warm
+# rim of light on his silhouette, drawn with the frost halo's
+# own mechanics - the silhouette-only pass at cardinal offsets
+# in a flat colour, under the body - but WARM where the halo
+# is cool, and layered INSIDE it (halo scatter outermost, rim
+# hugging the edge, body on top). Strength is the same admin
+# "backlight" key the glow reads, handed to prepare(): the
+# colour warms with the strength (mixed from the dial cream
+# toward RIM_WARM) and the radius steps 1 -> 2 px at 75, the
+# halo's own step. At 0 there is no rim pass at all - the
+# pre-v18 rects, byte for byte. The per-frame arms get the
+# same pass in _draw_arm; the held props do not (small, and
+# mostly inside the body's own rim zone).
+DEFAULT_BACKLIGHT = 0            # module state until main.py
+                                 # applies the config (whose
+                                 # default is 50 - admin.py)
+RIM_WARM = (255, 216, 150)       # 888 - lamplight on an edge
+
+_backlight = DEFAULT_BACKLIGHT   # current strength, 0..100
+_rim_r = 0                       # rim dilation radius, px
+_rim_col = None                  # the rim colour at _backlight
+_rim_pal = None                  # flat rim palette for the
+                                 # rect bake (silhouette pass)
+
+
+def _backlight_state(backlight):
+    """(rim radius, rim colour) for a backlight strength
+    0..100. At 0: no rim. The colour mixes from the dial's
+    CREAM toward RIM_WARM by the strength, so 50 is a soft
+    warm edge and 100 the full lamplight line."""
+    if backlight <= 0:
+        return 0, None
+    col = _mix565_to(clockface.CREAM, RIM_WARM,
+                     backlight / 100.0)
+    return (1 if backlight < 75 else 2), col
 
 # --- the snap grids (drawn-body offsets from HOME_FEET, px) ---
 # pose() snaps the eased body offset to the nearest grid point;
@@ -759,7 +811,8 @@ _rects = None          # {"stand": {(ox, oy): (bands, baked)},
                        # (False -> draw() stamps _bucket_bands
                        # first; see the grid note above)
 _bucket_bands = None   # the shared bucket-only rect's bands
-_prep_key = None       # (id(dial canvas), dial fingerprint, frost)
+_prep_key = None       # (id(dial canvas), dial fingerprint,
+                       #  frost, backlight)
 
 
 def _dial_fingerprint(dial):
@@ -850,6 +903,19 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
                        (HOME_FEET[0] + ox + dx,
                         HOME_FEET[1] + oy + dy), bend,
                        _HALO_PALETTE, True)
+    # the backlight rim (v18): the same silhouette pass in the
+    # warm rim colour, drawn AFTER the halo so it hugs the
+    # body's edge inside the cool scatter - light catching the
+    # outline of a man standing in front of the glow.
+    if _rim_r:
+        r = _rim_r
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
+            if with_bucket:
+                _draw_bucket(views, _rim_pal, dx, dy, True)
+            _draw_body(views, fig,
+                       (HOME_FEET[0] + ox + dx,
+                        HOME_FEET[1] + oy + dy), bend,
+                       _rim_pal, True)
     # bucket at its home place, then the body at the grid point
     if with_bucket:
         _draw_bucket(views, _pal)
@@ -870,15 +936,20 @@ def _build_bucket_rect(dial, bucket_box):
         r = _halo_r
         for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
             _draw_bucket(views, _HALO_PALETTE, dx, dy, True)
+    if _rim_r:
+        r = _rim_r
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
+            _draw_bucket(views, _rim_pal, dx, dy, True)
     _draw_bucket(views, _pal)
     return bands
 
 
-def prepare(dial=None, frost=None):
+def prepare(dial=None, frost=None, backlight=None):
     """Pre-composite the body rects (both poses x the snap grid)
-    over the current dial layer. Idempotent per dial + frost:
-    keyed on the dial canvas, a pixel fingerprint AND the frost
-    strength, so a re-rendered dial (face switch) or a frost
+    over the current dial layer. Idempotent per dial + frost +
+    backlight: keyed on the dial canvas, a pixel fingerprint
+    AND both strengths, so a re-rendered dial (face switch, a
+    backlight change - the glow is in the dial) or a strength
     change rebuilds on the next call. Called explicitly by the
     bench runner / boot flow after render_static(), and lazily
     by draw().
@@ -887,9 +958,15 @@ def prepare(dial=None, frost=None):
     config key); None keeps the current value. The palette and
     halo radius for the strength are (re)derived on EVERY call,
     cache hit or not, so draw()'s per-frame arms always match
-    the baked rects."""
+    the baked rects.
+
+    backlight: the backlight strength 0..100 (the "backlight"
+    config key, v18); None keeps the current value. Only the
+    rim state derives from it here - the glow half of the
+    effect lives in the dial (clockface), which the caller
+    re-renders before calling."""
     global _rects, _bucket_bands, _prep_key, _track, _frost, \
-        _pal, _halo_r
+        _pal, _halo_r, _backlight, _rim_r, _rim_col, _rim_pal
     if dial is None:
         dial = display.dial()
     if frost is not None:
@@ -898,14 +975,24 @@ def prepare(dial=None, frost=None):
         if frost > 100:
             frost = 100
         _frost = int(frost)
+    if backlight is not None:
+        if backlight < 0:
+            backlight = 0
+        if backlight > 100:
+            backlight = 100
+        _backlight = int(backlight)
     _pal, _halo_r = _frost_state(_frost)
-    key = (id(dial), _dial_fingerprint(dial), _frost)
+    _rim_r, _rim_col = _backlight_state(_backlight)
+    _rim_pal = (_rim_col,) * len(_RAW_PALETTE) if _rim_r \
+        else None
+    key = (id(dial), _dial_fingerprint(dial), _frost, _backlight)
     if _rects is not None and _prep_key == key:
         return
     # content bboxes first: body per pose + bucket, measured at
     # home by extent tracking (no drawing, no scratch canvas);
-    # the pad leaves room for the halo pass around the shapes
-    pad = 2 + _halo_r
+    # the pad leaves room for the halo AND rim passes around
+    # the shapes (whichever reaches farther)
+    pad = 2 + max(_halo_r, _rim_r)
     fig = Figure()
     body_box = {}
     for name, bend in (("stand", 0.0), ("dip", 1.0)):
@@ -1217,8 +1304,12 @@ class Figure:
     # --- drawing ---
 
     def _draw_arm(self, canvas, pose, side, pal, hr):
-        """One arm: [halo,] upper = shirt sleeve, forearm = skin,
-        hand a disc - all in the given palette."""
+        """One arm: [halo,] [rim,] upper = shirt sleeve,
+        forearm = skin, hand a disc - all in the given palette.
+        The rim pass (v18) is the halo's widened-segment trick
+        in the warm rim colour, drawn after the halo and under
+        the arm, so the arm's edge catches the backlight the
+        same way the baked body's does."""
         sh = pose["shoulder_" + side]
         el = pose["elbow_" + side]
         ha = pose["hand_" + side]
@@ -1231,6 +1322,15 @@ class Figure:
                                            ha[0], ha[1],
                                            9 + 2 * hr),
                        FROST_HALO)
+        if _rim_r:
+            _band_poly(canvas, _seg_coords(sh[0], sh[1],
+                                           el[0], el[1],
+                                           11 + 2 * _rim_r),
+                       _rim_col)
+            _band_poly(canvas, _seg_coords(el[0], el[1],
+                                           ha[0], ha[1],
+                                           9 + 2 * _rim_r),
+                       _rim_col)
         _band_poly(canvas, _seg_coords(sh[0], sh[1],
                                        el[0], el[1], 11),
                    pal[_P_SHIRT])

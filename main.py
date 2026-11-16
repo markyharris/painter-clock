@@ -120,6 +120,19 @@ def _apply_date(face_mod, cfg):
         setter(cfg.get("show_date", True))
 
 
+def _apply_backlight(face_mod, cfg):
+    """Hand the admin "backlight" setting to the face module
+    (v18) - the same convention as the date: the painter
+    exposes set_backlight(value) and bakes the glow into its
+    static layer at the next render_static(). The figure's
+    rim half of the effect is handed over separately, via
+    figure.prepare()'s backlight argument. A face without
+    the setter simply has no glow."""
+    setter = getattr(face_mod, "set_backlight", None)
+    if setter is not None:
+        setter(cfg.get("backlight", 50))
+
+
 def _apply_sleep(show, cfg):
     """Hand the config's sleep hours to the show: in the window
     the sleep scene owns the display (v15 - he lies down, the
@@ -201,13 +214,16 @@ def main():
     # 6. Dial layer, figure rects.
     face_name = cfg.get("face", "painter")
     frost_now = cfg.get("frost", 55)
+    backlight_now = cfg.get("backlight", 50)
     date_now = cfg.get("show_date", True)
     face_mod = _face_module(face_name)
     _apply_date(face_mod, cfg)
+    _apply_backlight(face_mod, cfg)
     face_mod.render_static(display.dial())
     print("main: dial rendered (face: %s)" % face_name)
-    figmod.prepare(display.dial(), frost_now)
-    print("main: figure prepared (frost %s)" % frost_now)
+    figmod.prepare(display.dial(), frost_now, backlight_now)
+    print("main: figure prepared (frost %s, backlight %s)"
+          % (frost_now, backlight_now))
 
     # 7. Admin + after-boot update check (flags only).
     admin.start()
@@ -298,18 +314,32 @@ def main():
             if cfg.get("face", "painter") != face_name:
                 face_name = cfg.get("face", "painter")
                 frost_now = cfg.get("frost", 55)
+                backlight_now = cfg.get("backlight", 50)
                 face_mod = _face_module(face_name)
                 _apply_date(face_mod, cfg)
+                _apply_backlight(face_mod, cfg)
                 face_mod.render_static(display.dial())
-                figmod.prepare(display.dial(), frost_now)
+                figmod.prepare(display.dial(), frost_now,
+                               backlight_now)
                 drawn_total = None  # force a repaint
                 print("main: face changed to %s" % face_name)
-            elif cfg.get("frost", 55) != frost_now:
-                # frost only: the rects are re-baked with the new
-                # strength (prepare is keyed on it); the dial and
-                # the panel are untouched
+            elif cfg.get("frost", 55) != frost_now \
+                    or cfg.get("backlight", 50) != backlight_now:
+                # frost and/or backlight: the rects are re-baked
+                # with the new strengths (prepare is keyed on
+                # both). A backlight change ALSO re-renders the
+                # dial - the glow is baked into the static layer
+                # - while a frost-only change leaves the dial
+                # and the panel untouched, as before.
                 frost_now = cfg.get("frost", 55)
-                figmod.prepare(display.dial(), frost_now)
+                if cfg.get("backlight", 50) != backlight_now:
+                    backlight_now = cfg.get("backlight", 50)
+                    _apply_backlight(face_mod, cfg)
+                    face_mod.render_static(display.dial())
+                    print("main: backlight changed to %s"
+                          % backlight_now)
+                figmod.prepare(display.dial(), frost_now,
+                               backlight_now)
                 drawn_total = None  # force a repaint
                 print("main: frost changed to %s" % frost_now)
 
