@@ -38,6 +38,7 @@
 # show.py decides WHAT is revealed during a show; the helpers here
 # know HOW a hand looks - 14 segments, fixed hand-painted wobble,
 # tapering width - exactly as the prototype settled it (SPEC.md 3.2).
+import framebuf
 import math
 from array import array
 
@@ -59,16 +60,21 @@ HOUR_W = 12           # hour hand: shorter and fatter
 # until then NUMERALS=True still draws the tick dial.
 NUMERALS = False
 
-# The date line (v11): "Sun 15 Nov" in the dial's ink, upper
-# centre, drawn per frame by compose() when enabled - painted
-# on the glass like the hands, so NOT frost-veiled (figure.py's
-# veil is for the man behind the glass, not for what's painted
-# on it). Glyphs are the firmware framebuf's built-in 8x8 font
-# (framebuf.text). Rows DATE_Y..DATE_Y+7 sit in open cream:
-# clear of the rim ticks (their inner edge is y 35 at the top)
-# and of his cap even at the body's maximum rise (cap top
-# 158 - 39 = 119).
-DATE_Y = 104
+# The date line (v11; v14: scaled up): "Sun 15 Nov" in the
+# dial's ink, upper centre, drawn per frame by compose() when
+# enabled - painted on the glass like the hands, so NOT
+# frost-veiled (figure.py's veil is for the man behind the
+# glass, not for what's painted on it). v11 drew the firmware
+# framebuf's built-in 8x8 font at 1x and Mark found it "way
+# too small to read", so v14 grows every glyph pixel to a
+# DATE_SCALE square (glyph box 24 px tall). Rows
+# DATE_Y..DATE_Y+DATE_H-1 sit in open cream: clear of the rim
+# ticks (their inner edge is y 35 at the top) and of his cap
+# even at the body's maximum rise (cap top 158 - 39 = 119).
+DATE_Y = 88
+DATE_SCALE = 3
+DATE_H = 8 * DATE_SCALE        # the glyph box: 24 px tall
+DATE_CW = 8 * DATE_SCALE       # ...and 24 px per character
 _WEEKDAYS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -108,18 +114,63 @@ def date_string(time_tuple):
                          _MONTHS[m - 1])
 
 
+_strip = None        # (string, strip bytes, strip width) cache
+
+
+def _pat(colour):
+    """One RGB565 pixel as 2 little-endian bytes - display.py's
+    byte order (kept local: this module stays display-free)."""
+    return bytes((colour & 0xFF, (colour >> 8) & 0xFF))
+
+
+def _date_strip(s):
+    """The date string at DATE_SCALE, as an opaque strip
+    (bytes, width). The 8x8 font is drawn once into a small
+    scratch FrameBuffer (80x8 at most - nowhere near the
+    full-size FrameBuffer the firmware wedges on), then each
+    set pixel grows to a DATE_SCALE square. The strip's
+    ground is CREAM: the dial under the box is plain cream
+    (the box's farthest corner sits ~194 px from centre,
+    inside the 233 cream disc, clear of ticks and of his
+    cap), so copying the strip in opaquely is pixel-exact.
+    Rebuilt only when the string changes - once a day."""
+    global _strip
+    if _strip is not None and _strip[0] == s:
+        return _strip[1], _strip[2]
+    w1 = len(s) * 8
+    sfb = framebuf.FrameBuffer(bytearray(w1 * 16), w1, 8,
+                               framebuf.RGB565)
+    sfb.fill(CREAM)
+    sfb.text(s, 0, 0, INK)
+    w = w1 * DATE_SCALE
+    strip = bytearray(_pat(CREAM) * (w * DATE_H))
+    ink = _pat(INK) * DATE_SCALE
+    for sy in range(8):
+        for sx in range(w1):
+            if sfb.pixel(sx, sy) == INK:
+                for dy in range(DATE_SCALE):
+                    do = ((sy * DATE_SCALE + dy) * w
+                          + sx * DATE_SCALE) * 2
+                    strip[do:do + DATE_SCALE * 2] = ink
+    _strip = (s, bytes(strip), w)
+    return _strip[1], _strip[2]
+
+
 def draw_date(fb, time_tuple):
-    """The date, centred at DATE_Y in INK, through the band
-    windows like every other primitive - band-limited the same
-    way draw_hand is: only the band the glyphs touch is called
-    into (the glyphs live entirely in the top band)."""
+    """The date, centred at DATE_Y in INK: the cached scaled
+    strip copied into the frame buffer row by row (the
+    Canvas.blit slice pattern - 24 slice copies, no window
+    needed). The glyph box (rows 88..111) still lives
+    entirely in the top band; the minute hand crosses it and
+    is drawn after, exactly as at 1x."""
     s = date_string(time_tuple)
-    x = CX - (len(s) * 8) // 2
-    wins = list(fb.band_windows())
-    bh = wins[1][1] - wins[0][1] if len(wins) > 1 else 480
-    for win, y0 in wins:
-        if DATE_Y + 8 > y0 and DATE_Y < y0 + bh:
-            win.text(s, x, DATE_Y - y0, INK)
+    strip, w = _date_strip(s)
+    x = CX - w // 2
+    buf = fb.buf
+    row = w * 2
+    for r in range(DATE_H):
+        do = ((DATE_Y + r) * 480 + x) * 2
+        buf[do:do + row] = strip[r * row:(r + 1) * row]
 
 
 def rgb565(r, g, b):

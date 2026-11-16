@@ -68,15 +68,25 @@ IDLE_MARGIN_MS = 1000     # a routine starts only if it ends at
 # The weight rock (Nov 15, 2026, v10 - Mark: "at minimum, he
 # needs to rock from one leg to the other as if impatiently
 # waiting"). Between shows the standing body target sways one
-# snap step each way on a ~4.6 s cycle: dwell on one leg, an
-# eased shift across, dwell on the other, shift back. It is an
-# intent (figure's sway_x), not a pose: the arms re-hang off
-# the moving shoulders by themselves. It runs only while he is
-# standing between shows - paused during shows and routines,
-# still during sleep hours - and main.py frames continuously
-# while he is awake precisely so the rock is on the glass.
+# snap step each way: dwell on one leg, an eased shift across,
+# dwell on the other, shift back. It is an intent (figure's
+# sway_x), not a pose: the arms re-hang off the moving shoulders
+# by themselves. It runs only while he is standing between
+# shows - paused during shows and routines, still during sleep
+# hours - and main.py frames continuously while he is awake
+# precisely so the rock is on the glass.
+#
+# v14: the v10-v13 rock ran on a fixed 4.6 s cycle and Mark
+# called it "way too rhythmic". The dwells are now RANDOM -
+# each side's dwell is drawn fresh, uniform in the range
+# below - while the shift keeps its v10 ease and duration
+# (0.20 of the old cycle). No period survives: two dwells in
+# a row can be 3 s and 9 s.
 ROCK_AMP = 15             # px each way = one snap-grid step
-ROCK_CYCLE_MS = 4600      # dwell-shift-dwell-shift, ~4.6 s
+ROCK_SHIFT_MS = 920       # the eased shift across (v10: 0.20
+                          # of the 4.6 s cycle)
+ROCK_DWELL_MIN = 3000     # per-side dwell, drawn uniform in
+ROCK_DWELL_RAND = 6000    # [MIN, MIN+RAND] = 3.0-9.0 s
 
 
 def _days_from_civil(y, m, d):
@@ -448,8 +458,14 @@ class Show:
         self.sleep_end = 0
         self._last_now = None
         self._dt = 0             # last tick's dt (the rock clock)
-        self._rock_t = 0         # weight-rock phase clock, ms -
-                                 # advances only while standing
+        # weight-rock state (v14): a two-phase machine - dwell
+        # on a side for a randomly drawn span, then the eased
+        # shift to the other side. Advances only while standing.
+        self._rock_side = -1     # the side he rests on: -1/+1
+        self._rock_shift = None  # ms into the shift, or None
+                                 # while dwelling
+        self._rock_left = ROCK_DWELL_MIN \
+            + random.randint(0, ROCK_DWELL_RAND)
         self.rock_on = True      # the desk tests turn this off to
                                  # pin the rest pose; the board rocks
         self.last_idle_name = None   # admin status line (v10):
@@ -778,22 +794,43 @@ class Show:
         self.fig.set_intent(tau_ms=380)
 
     def _rock_offset(self):
-        """The weight rock's sway target for the current phase:
-        dwell at -ROCK_AMP (0-.30 of the cycle), an eased shift
-        across (.30-.50), dwell at +ROCK_AMP (.50-.80), an eased
-        shift back (.80-1). The shifts cross centre mid-way, so
-        the drawn body steps -15 -> 0 -> +15 -> 0 as the snap
-        thresholds pass - a man shifting his weight, not a dance.
-        figure's own easing (tau 380 at rest) rounds what the
-        phase steps leave."""
-        p = (self._rock_t % ROCK_CYCLE_MS) / ROCK_CYCLE_MS
-        if p < 0.30:
-            return -float(ROCK_AMP)
-        if p < 0.50:
-            return -ROCK_AMP + 2 * ROCK_AMP * ease((p - 0.30) / 0.20)
-        if p < 0.80:
-            return float(ROCK_AMP)
-        return ROCK_AMP - 2 * ROCK_AMP * ease((p - 0.80) / 0.20)
+        """The weight rock's sway target right now: the resting
+        side's -/+ROCK_AMP while dwelling; during a shift, the
+        eased line from the old side to the new (v10's ease and
+        duration). The shift crosses centre mid-way, so the
+        drawn body steps -15 -> 0 -> +15 as the snap thresholds
+        pass - a man shifting his weight, not a dance. figure's
+        own easing (tau 380 at rest) rounds what the steps
+        leave."""
+        if self._rock_shift is None:
+            return float(self._rock_side * ROCK_AMP)
+        p = self._rock_shift / ROCK_SHIFT_MS
+        return ROCK_AMP * self._rock_side * (1 - 2 * ease(p))
+
+    def _advance_rock(self):
+        """Consume this tick's dt in the rock machine (v14).
+        Dwell expiry starts the shift; shift expiry lands him
+        on the other side and draws the NEXT dwell fresh -
+        uniform in [ROCK_DWELL_MIN, +ROCK_DWELL_RAND]. A long
+        dt (a show boundary ate the frames) can cross several
+        phases; the loop settles them in order."""
+        t = self._dt
+        while t > 0:
+            if self._rock_left > t:
+                self._rock_left -= t
+                if self._rock_shift is not None:
+                    self._rock_shift += t
+                t = 0
+            else:
+                t -= self._rock_left
+                if self._rock_shift is None:
+                    self._rock_shift = 0
+                    self._rock_left = ROCK_SHIFT_MS
+                else:
+                    self._rock_shift = None
+                    self._rock_side = -self._rock_side
+                    self._rock_left = ROCK_DWELL_MIN \
+                        + random.randint(0, ROCK_DWELL_RAND)
 
     def _run_idle(self, now_ms):
         if self.idle is None:
@@ -826,11 +863,11 @@ class Show:
             if not started:
                 self._rest_intent()
                 # standing between shows: the weight rock. The
-                # phase clock advances only here, so the rock
-                # pauses for shows and routines and resumes where
-                # it left off; sleep hours stand him still.
+                # machine advances only here, so the rock pauses
+                # for shows and routines and resumes where it
+                # left off; sleep hours stand him still.
                 if self.rock_on and not self._sleeping():
-                    self._rock_t += self._dt
+                    self._advance_rock()
                     self.fig.set_intent(sway_x=self._rock_offset())
                 return
         p = (now_ms - self.idle["start"]) / self.idle["dur"]

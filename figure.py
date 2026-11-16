@@ -78,10 +78,27 @@ HIP_H = 116                      # hip pivot height above feet (the
                                  # lengthen and the torso shortens
                                  # inside the v10 height (see the
                                  # proportions note below)
-ARM_L1 = 74                      # upper arm
-ARM_L2 = 72                      # forearm - total reach 146
+ARM_L1 = 64                      # upper arm
+ARM_L2 = 82                      # forearm + hand - total reach 146
+                                 # v14: re-split from v13's 74/72
+                                 # at Mark's note - on a human the
+                                 # rig's second bone ends at the
+                                 # hand holding the tool, and
+                                 # elbow-to-fingertips runs ~25-40%
+                                 # longer than shoulder-to-elbow
+                                 # (the artist canons; bone-for-bone
+                                 # the radius alone is ~74% of the
+                                 # humerus). 82/64 = +28%. Total
+                                 # reach and the clamp are v13's,
+                                 # unchanged - only the elbow moves.
 REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 144
-ARM_MIN_D = abs(ARM_L1 - ARM_L2)  # 2: targets closer than this
+ARM_FLOOR_D = 30                 # update() keeps the drawn
+                                 # anchor at least this far from
+                                 # the working target: ARM_MIN_D
+                                 # plus the rect grid's snap error,
+                                 # so the inner clamp below stays
+                                 # out of the frontier's way (v14)
+ARM_MIN_D = abs(ARM_L1 - ARM_L2)  # 18: targets closer than this
                                  # to the shoulder are inside the
                                  # bones' difference - unreachable;
                                  # ik() lands the hand at this
@@ -983,6 +1000,49 @@ class Figure:
             des_x = lo
         if des_x > hi:
             des_x = hi
+        if tip is not None:
+            # v14: keep the working arm out of its own dead
+            # zone. The arm's reachable set is the annulus
+            # [ARM_MIN_D, REACH_MAX]; v13's near-equal bones
+            # (74/72) made the inner edge 2 px and invisible,
+            # but the 64/82 re-split puts it at 18 - and the
+            # follow happily parks the shoulder ON a near
+            # frontier (mid-stroke targets sit close to the
+            # dial centre), where ik() must push the hand out
+            # to 18 px along the ray and it overshoots the
+            # frontier by that much (sweep: 15.9 px at reveal
+            # 0.5, 9-10 o'clock). So the BODY keeps its
+            # distance instead: predict the drawn anchor from
+            # the desired body (bend is 0 wherever a frontier
+            # matters; routines lean at small follow with far
+            # targets) and push the desired body straight away
+            # from the tip until the anchor is ARM_FLOOR_D
+            # out - the margin over ARM_MIN_D covers the rect
+            # grid's snap error (~10 px worst case).
+            if self.intent["tip"] is not None:
+                sdx = SHOULDER_DX if self.intent["tool"] == "brush" \
+                    else -SHOULDER_DX
+            elif self.intent["tip_r"] is not None:
+                sdx = SHOULDER_DX
+            else:
+                sdx = -SHOULDER_DX
+            pdy = des_y - HOME_SHOULDER[1]
+            if pdy < -BODY_RISE:
+                pdy = -BODY_RISE
+            if pdy > BODY_SINK:
+                pdy = BODY_SINK
+            ax = des_x - 4 + sdx
+            ay = HOME_FEET[1] + pdy - SHOULDER_H
+            dx = tip[0] - ax
+            dy = tip[1] - ay
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < ARM_FLOOR_D:
+                if d < 0.1:
+                    des_y -= ARM_FLOOR_D   # on the tip: rise off it
+                else:
+                    push = (ARM_FLOOR_D - d) / d
+                    des_x -= dx * push
+                    des_y -= dy * push
         tau = self.intent["tau_ms"]
         k = dt_ms / (tau + dt_ms)  # frame-rate independent-ish easing
         self.sh_x += (des_x - self.sh_x) * k
