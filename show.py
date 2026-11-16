@@ -57,9 +57,11 @@ IDLE_WEIGHTS = (("shoulder", 4), ("watch", 3), ("scratch", 3),
                 ("apple", 2), ("phone", 1), ("plane", 1))
 IDLE_FIRST_MIN = 45000    # first routine 45-90 s after boot...
 IDLE_FIRST_RAND = 45000
-IDLE_EVERY_MIN = 100000   # ...then one every ~100-220 s (the
-IDLE_EVERY_RAND = 120000  # "roughly every 2-4 minutes" band,
-                          # fit retries included)
+IDLE_EVERY_MIN = 35000    # ...then one every ~35-75 s (v13:
+IDLE_EVERY_RAND = 40000   # Mark asked for the routines more
+                          # often - roughly one a minute, fit
+                          # retries included; was ~100-220 s,
+                          # the "every 2-4 minutes" band)
 IDLE_MARGIN_MS = 1000     # a routine starts only if it ends at
                           # least this long before the boundary
 

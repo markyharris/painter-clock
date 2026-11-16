@@ -72,11 +72,16 @@ HEAD_H = 266                     # head centre height above feet
 HOME_SHOULDER = (244, HOME_FEET[1] - SHOULDER_H)
 BUCKET = (332, 436)
 SHOULDER_CLAMP_X = 106           # shoulder may stray this far from home x
-HIP_H = 90                       # hip pivot height above feet (the bend)
-ARM_L1 = 82                      # upper arm
-ARM_L2 = 78                      # forearm - total reach 160
-REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 158
-ARM_MIN_D = abs(ARM_L1 - ARM_L2)  # 4: targets closer than this
+HIP_H = 116                      # hip pivot height above feet (the
+                                 # bend). v13: was 90 - the hips
+                                 # rise (y 356 -> 330), the legs
+                                 # lengthen and the torso shortens
+                                 # inside the v10 height (see the
+                                 # proportions note below)
+ARM_L1 = 74                      # upper arm
+ARM_L2 = 72                      # forearm - total reach 146
+REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 144
+ARM_MIN_D = abs(ARM_L1 - ARM_L2)  # 2: targets closer than this
                                  # to the shoulder are inside the
                                  # bones' difference - unreachable;
                                  # ik() lands the hand at this
@@ -90,17 +95,21 @@ BEND_RAD = 0.66                  # waist fold at bend == 1 (~38 deg;
                                  # not a bend. At 0.66 the head
                                  # lands over the bucket and both
                                  # dips still reach - test_reach)
+                                 # v13: kept as-is - the lever is
+                                 # 150 px at the new HIP_H and both
+                                 # floor grabs re-prove at 0.0.
 BODY_RISE = 39                   # the drawn body may rise this far
                                  # toward high work (feet leave the
                                  # floor line upward)...
-BODY_SINK = 20                   # ...and sink this far toward low
+BODY_SINK = 26                   # ...and sink this far toward low
                                  # work (see update()'s clamp).
-                                 # v10 values, desk-chosen: the long
-                                 # arms reach the top tips with the
-                                 # rise at 39 (52 in v9 - the sweep
-                                 # is unchanged), which keeps the
-                                 # stand grid at v9's 65 rects and
-                                 # prepare() at v9's time.
+                                 # v13: was 20 in v10 (6 in v9).
+                                 # The sink is the low frontier's
+                                 # only travel: with the shorter
+                                 # v13 arms the 6 o'clock distance
+                                 # is closed by the body crouching
+                                 # the last 6 px, not by arm length
+                                 # (see the proportions note).
 
 # TALLER FIGURE (Nov 15, 2026, v10 - Mark: "make him taller. The
 # center of the clock arms should be on his chest, not his face."):
@@ -122,6 +131,34 @@ BODY_SINK = 20                   # ...and sink this far toward low
 # estimates would need the head itself ~1.5x taller, which
 # would break the approved head - face/shoulders/hips/pivot
 # were the priorities and all land on target.
+#
+# PROPORTIONS REBALANCE (Nov 15, 2026, v13 - Mark, on the v10
+# glass: "the proportions are off. The legs need to be taller
+# and the torso shorter. Similarly the arms need to be
+# shortened to a more appropriate length."): same overall
+# height - cap top 158, face centre 180, shoulders 225, feet
+# and bucket unmoved - rebalanced inside it. HIP_H 90 -> 116:
+# hips y 356 -> 330, torso 131 -> 105 px, legs 90 -> 116 px
+# (the leg quads and pelvis in _draw_torso ride on HIP_H, and
+# the bend pivot IS HIP_H, so the art and the rig move
+# together). Arms 82/78 -> 74/72 (reach 160 -> 146) and
+# HANG_DY 152 -> 135: the hanging hands land at mid-thigh
+# (y ~360 - hips 330, knees ~390) at ~94% extension.
+#
+# The honest reach trade: truly natural arms (~115-125 reach)
+# were swept first and CANNOT hold the frontier proof - the
+# 6 o'clock minute frontier sits ~153 px from the best drawn
+# shoulder (the sink clamp is the wall: the boots leave the
+# dial below +26), so a 114-reach arm lands 41 px short there
+# and the dip/sip floor grabs fail with it. 74/72 is the
+# SHORTEST pair that holds the invariant: worst frontier
+# error 9.2 px (minute, bottom arc at 168-180 deg, full
+# reveal; everything else 0.0), both floor grabs 0.0 at full
+# bend - desk-proven in test_reach.py by the v10 method. The
+# last 6 px of the low reach come from BODY_SINK 20 -> 26,
+# not from bone. BEND_RAD stays 0.66: at the shorter torso's
+# 150 px hip-to-head lever the dip re-proves at 0.0 with the
+# head landing where v10's dip put it.
 
 # arm anchors and rest targets, relative to the DRAWN body: the
 # anchors sit just inside the torso's top corners (the sprite's
@@ -136,10 +173,12 @@ BODY_SINK = 20                   # ...and sink this far toward low
 SHOULDER_DX = 19                 # anchor |x| from the body centre
 HANG_OUT = 8                     # hand target this far outboard
                                  # of its shoulder anchor...
-HANG_DY = 152                    # ...and this far below it (v10:
-                                 # with the longer torso this puts
-                                 # the hanging hands at upper-thigh
-                                 # height, just below the hip line)
+HANG_DY = 135                    # ...and this far below it (v13:
+                                 # was 152 in v10 - with the hips
+                                 # raised to y 330 this puts the
+                                 # hanging hands at MID-THIGH,
+                                 # ~94% of the shorter arm's
+                                 # reach, a soft elbow)
 
 # colours (RGB565 via clockface.rgb565)
 OVERALLS = clockface.rgb565(51, 80, 126)
@@ -276,9 +315,9 @@ def _frost_state(frost):
 # interact). Rects that do reach the bucket - the dip, the
 # rightmost standing columns - keep the union compositing.
 STAND_XS = (-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90)
-STAND_YS = (-39, -26, -13, 0, 13)
+STAND_YS = (-39, -26, -13, 0, 13, 26)
 DIP_XS = (0, 13, 26)
-DIP_YS = (-11, 5, 18)
+DIP_YS = (-11, 5, 18, 26)
 # v10: STAND_YS gains the +13 row and DIP_YS the +18 row - the
 # drawn body may now SINK toward low work (BODY_SINK in update())
 # as well as rise toward high work, and the grids must cover the
@@ -290,6 +329,10 @@ DIP_YS = (-11, 5, 18)
 # bend crosses 0.5 and the dip sprite takes over, and the counts
 # land back on v9's (65 stand + 9 dip) - the taller rects cost
 # ~1 MB more cache, but prepare() stays at v9's ~4.2 s.
+# v13: both grids gain the +26 row for the deeper BODY_SINK -
+# the stand goes to 78 rects, the dip to 12, and the dip's
+# floor grabs (bucket, mug) re-prove at 0.0 with the body
+# allowed all the way down (see the proportions note above).
 _GRIDS = {"stand": (STAND_XS, STAND_YS), "dip": (DIP_XS, DIP_YS)}
 
 
@@ -948,10 +991,11 @@ class Figure:
         # in full (he steps sideways), but vertically only within
         # a clamp: the body is rigid, so it rises toward high work
         # by at most BODY_RISE px and sinks toward low work by at
-        # most BODY_SINK (v10: the sink used to be 6 px - with the
-        # taller figure's shoulders 69 px higher, the 6 o'clock
-        # frontier needed the extra crouch; his boots stay inside
-        # the dial's cream at full sink). pose() derives the arm
+        # most BODY_SINK (v13: 26 px - the 6 o'clock frontier
+        # needs the crouch even more with the shorter arms; at
+        # full sink his boot soles just cross the cream's edge
+        # into the shade ring, transiently, while he works the
+        # lowest strokes). pose() derives the arm
         # anchors from this drawn body (snapped to the rect grid),
         # so the arms stay glued to the visible shoulders at any
         # reach; the IK clamp absorbs whatever travel the clamp
