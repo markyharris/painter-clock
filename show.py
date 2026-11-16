@@ -23,9 +23,11 @@
 # drawing. demo(now_ms) runs one full minute step on demand.
 #
 # The hourly cuckoo ritual (SPEC.md 3.4) landed in v20 (Nov 16,
-# 2026): ~0.7 s after the on-hour show he leans in, wipes a
-# clear circle in the frost with his cloth, and his face shows
-# SHARP inside it (figure's raw-palette patch) before the
+# 2026; choreography revised v21 the same day, on Mark's bench
+# verdict): ~0.7 s after the on-hour show he leans in, wipes a
+# clear circle in the frost with his cloth, brings the cloth
+# arm DOWN, and his face shows SHARP inside the circle
+# (figure's raw-palette patch) for a full 4 s before the
 # circle fogs back. It is chained off the hour show only -
 # never in the random idle mix - and it is suppressed entirely
 # in the sleep window (Mark, Nov 16: no cuckoo when he's
@@ -82,18 +84,31 @@ IDLE_EVERY_RAND = 40000   # Mark asked for the routines more
 IDLE_MARGIN_MS = 1000     # a routine starts only if it ends at
                           # least this long before the boundary
 
-# The cuckoo (Nov 16, 2026, v20): the hourly ritual, chained
-# after the on-hour show. Phase lengths in ms - lean in, wipe
-# the circle open, hold the sharp face, fog creeps back, step
-# back - 7,200 total, the prototype's shape at the settled
-# design (SPEC 3.4 reconciled with the task's numbers).
-CUCKOO_DUR = 7200
+# The cuckoo (Nov 16, 2026, v20; choreography revised v21):
+# the hourly ritual, chained after the on-hour show. Phase
+# lengths in ms - lean in, wipe the circle open, the cloth
+# arm comes DOWN, the sharp face holds clear, fog creeps
+# back, step back - 10,500 total.
+#
+# v21 is Mark's bench verdict on v20: "Seems to work but it
+# doesn't last, and his arm is in the way of the face the
+# whole time. It should wipe, then arm goes down and there
+# should be a 3-5 delay before the fog comes back." v20's
+# clear hold was ~1.5 s and the hand simply let go at its
+# end (target released at the rim, hand redrawn at the
+# hang). Now the wipe is followed by an explicit ARM-DOWN -
+# the hand sweeps down the rim it opened and drops to his
+# side over 800 ms - and a full 4.0 s hold (the middle of
+# Mark's 3-5) with the arm down before the fog.
+CUCKOO_DUR = 10500
 CUCKOO_DELAY_MS = 700     # the beat between the hour show's
                           # end and the lean-in
 CUCKOO_LEAN_MS = 1000
 CUCKOO_WIPE_MS = 2500     # wipe ends (cumulative)
-CUCKOO_HOLD_MS = 3960     # hold ends
-CUCKOO_FOG_MS = 5472      # fog ends; the rest is the retreat
+CUCKOO_DOWN_MS = 3300     # arm-down ends: the hand is at
+                          # his side, below the porthole
+CUCKOO_HOLD_MS = 7300     # hold ends: 4.0 s fully clear
+CUCKOO_FOG_MS = 8800      # fog ends; the rest is the retreat
 CUCKOO_HAND_R = 62        # the cloth hand's circle radius -
                           # just outside the porthole's 56, so
                           # the cloth rides the rim it opens
@@ -910,7 +925,7 @@ class Show:
                            bend=0.0, lean_in=0.0,
                            head_tilt=math.sin(p * math.pi) * 0.3)
 
-    # --- the cuckoo: the hourly ritual (v20) ---
+    # --- the cuckoo: the hourly ritual (v20, phases v21) ---
 
     def _chain_cuckoo(self, now_ms):
         """Called as a show completes: if it was the on-hour
@@ -973,13 +988,16 @@ class Show:
         start): lean in with the cloth hand rising to the
         circle's top (0-1000); the cloth traces the circle
         while the porthole opens behind it (1000-2500); the
-        sharp face holds, hand down (2500-3960); the frost
-        creeps back (3960-5472); he steps back (5472-7200).
-        The porthole envelope is frost_clear - mirrored into
-        the figure intent, where draw() composites the sharp
-        patch; the lean rides lean_in, which scales the patch
-        head. At frost=0 the same choreography plays - only
-        the clear/fog contrast is absent, as designed."""
+        hand sweeps down the rim it opened and drops to his
+        side (2500-3300, the v21 arm-down); the sharp face
+        holds clear with the arm down (3300-7300 - a full
+        4 s, v21); the frost creeps back (7300-8800); he
+        steps back (8800-10500). The porthole envelope is
+        frost_clear - mirrored into the figure intent, where
+        draw() composites the sharp patch; the lean rides
+        lean_in, which scales the patch head. At frost=0 the
+        same choreography plays - only the clear/fog contrast
+        is absent, as designed."""
         fig = self.fig
         e = now_ms - self.cuckoo["start"]
         if e >= CUCKOO_DUR:
@@ -1008,7 +1026,33 @@ class Show:
             tip = (hx + CUCKOO_HAND_R * math.sin(th),
                    hy - CUCKOO_HAND_R * math.cos(th))
             tool = "cloth"
+        elif e < CUCKOO_DOWN_MS:
+            # v21 arm-down: the wipe ended with the hand at
+            # the circle's top. It sweeps down the LEFT rim -
+            # on the rim it opened (hand radius CUCKOO_HAND_R,
+            # just outside the porthole), so the revealed face
+            # is never crossed - then drops from the rim's
+            # bottom to the hang at his side. The porthole
+            # stays fully open throughout.
+            lean = 1.0
+            clear = 1.0
+            q = (e - CUCKOO_WIPE_MS) \
+                / (CUCKOO_DOWN_MS - CUCKOO_WIPE_MS)
+            if q < 0.55:
+                a = math.pi * ease(q / 0.55)
+                tip = (hx - CUCKOO_HAND_R * math.sin(a),
+                       hy - CUCKOO_HAND_R * math.cos(a))
+            else:
+                bot = (hx, hy + CUCKOO_HAND_R)
+                tip = _lerp2(bot, hang_l,
+                             ease((q - 0.55) / 0.45))
+            tool = "cloth"
         elif e < CUCKOO_HOLD_MS:
+            # the hold (v21): arm down at his side - the
+            # intent simply releases, and the released hang
+            # is where the arm-down parked the hand, so
+            # nothing jumps - and the face stays clear a
+            # full 4.0 s before the fog.
             lean = 1.0
             clear = 1.0
             tip = None
