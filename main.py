@@ -147,6 +147,12 @@ def _apply_sleep(show, cfg):
                    mins(cfg.get("sleep_end", "06:00")))
 
 
+def _apply_cuckoo(show, cfg):
+    """Hand the config's cuckoo switch to the show (v20): the
+    hourly ritual can be silenced in admin without code."""
+    show.set_cuckoo(cfg.get("cuckoo_enabled", True))
+
+
 def _wifi_str(wlan, ssid):
     try:
         if wlan is not None and wlan.isconnected():
@@ -180,7 +186,7 @@ def main():
            "time_source": timekeep.time_source(), "wifi": "",
            "display_state": "starting", "uptime": "00:00:00",
            "version": VERSION, "changed": False, "tryit": None,
-           "idle_str": "-"}
+           "trycuckoo": False, "idle_str": "-"}
 
     # 2. Display FIRST (see the header: begin() refuses if the
     # RTC bus or the radio has run before it). The panel sits
@@ -232,6 +238,7 @@ def main():
     fig = figmod.Figure()
     show = showmod.Show(fig, display.dial())
     _apply_sleep(show, cfg)
+    _apply_cuckoo(show, cfg)
     canvas = display.canvas()
 
     # 8. The run loop.
@@ -258,6 +265,7 @@ def main():
         # and drifts its Z's on a ~1 s frame rhythm.
         active = (not show.sleeping_at(total)
                   or show.running or show.idle is not None
+                  or show.cuckoo is not None or show.trycuckoo
                   or show.tryit is not None
                   or (show.next_idle_at is not None
                       and time.ticks_diff(now_ms,
@@ -277,7 +285,8 @@ def main():
             drawn_total = total
             if show.sleeping_at(total):
                 last_sleep_ms = now_ms
-            if show.running or show.idle is not None:
+            if show.running or show.idle is not None \
+                    or show.cuckoo is not None:
                 last_active_ms = now_ms
 
         # Status strings for the admin page, refreshed ~1/s.
@@ -296,11 +305,18 @@ def main():
             # at the next gap where it fits before the boundary
             show.queue_idle(app["tryit"])
             app["tryit"] = None
+        if app.get("trycuckoo"):
+            # an admin "Try the cuckoo" press: queue the ritual;
+            # it runs at the next gap (sleep defers it, exactly
+            # like a routine try-it)
+            show.queue_cuckoo()
+            app["trycuckoo"] = False
         if app["changed"]:
             app["changed"] = False
             cfg = admin.load_config()
             app["config"] = cfg
             _apply_sleep(show, cfg)
+            _apply_cuckoo(show, cfg)
             display.set_backlight(cfg["brightness"])
             if cfg.get("show_date", True) != date_now:
                 # date toggled: the painter draws it per frame,

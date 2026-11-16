@@ -62,6 +62,16 @@
 # scene is untouched (it has its own raw night colours, no
 # palette, no rim).
 #
+# CUCKOO (Nov 16, 2026, v20): on the hour he leans in and wipes
+# a clear circle in the frost; inside it his face is SHARP.
+# The patch is a small scratch buffer (dial region + the sharp
+# torso top + the head drawn raw at lean-in scale) composited
+# onto the frame through a circular mask in 4-row span groups -
+# C slice copies only, no per-pixel Python (see
+# _draw_cuckoo_patch). The frost paragraph above promised this
+# path through _draw_head; the shipped head is _draw_head_sharp,
+# a scale-about-the-centre twin of _draw_head's art.
+#
 # IDLE LIFE (Nov 15, 2026): show.py's routines drive both hands
 # through intent tip_l / tip_r (full hang-to-hang paths) and hang
 # props on them (intent prop_l / prop_r, cap_off, behind, core,
@@ -798,6 +808,49 @@ def _draw_head(views, fig, feet, bend, pal, sil=False):
                                for v in p]), pal[_P_PAINT])
 
 
+def _draw_head_sharp(views, hx, hy, s):
+    """The head SHARP at lean-in scale (v20, the cuckoo patch):
+    _draw_head's art - neck, head, cap, brim, eyes, mouth, in
+    _RAW_PALETTE, no halo - drawn about the head centre
+    (hx, hy) with every offset and radius multiplied by s
+    (1.0 = the baked head exactly; the cuckoo leans to
+    CUCKOO_GROW). Kept as its own function rather than a scale
+    parameter on _draw_head so prepare()'s bake - which the
+    op-count guard prices - stays literally untouched. The
+    geometry mirrors _draw_head at bend 0, where the head
+    centre sits HEAD_H above the feet: the neck runs from
+    +10 to +53 (the shoulder line) in head-centre coords."""
+    pal = _RAW_PALETTE
+
+    def pt(dx, dy):
+        return (hx + dx * s, hy + dy * s)
+
+    n = (pt(-6, 10), pt(6, 10), pt(7, 53), pt(-7, 53))
+    _poly_v(views, _quad(n[0][0], n[0][1], n[1][0], n[1][1],
+                         n[2][0], n[2][1], n[3][0], n[3][1]),
+            pal[_P_SKIN])
+    _ellipse_v(views, hx, hy, int(round(20 * s)),
+               int(round(23 * s)), pal[_P_SKIN])
+    c = (pt(-19, -22), pt(19, -22), pt(19, -8), pt(-19, -8))
+    _poly_v(views, _quad(c[0][0], c[0][1], c[1][0], c[1][1],
+                         c[2][0], c[2][1], c[3][0], c[3][1]),
+            pal[_P_CAP])
+    b = (pt(-19, -8), pt(20, -8), pt(20, -5), pt(-19, -5))
+    _poly_v(views, _quad(b[0][0], b[0][1], b[1][0], b[1][1],
+                         b[2][0], b[2][1], b[3][0], b[3][1]),
+            pal[_P_CAPDK])
+    erx = max(1, int(round(2 * s)))
+    ery = max(1, int(round(3 * s)))
+    e_l = pt(-7, 3)
+    e_r = pt(7, 3)
+    _ellipse_v(views, e_l[0], e_l[1], erx, ery, pal[_P_PAINT])
+    _ellipse_v(views, e_r[0], e_r[1], erx, ery, pal[_P_PAINT])
+    mpts = (pt(-6, 10), pt(0, 12), pt(6, 10), pt(6, 13),
+            pt(0, 15), pt(-6, 13))
+    _poly_v(views, array("h", [int(round(v)) for p in mpts
+                               for v in p]), pal[_P_PAINT])
+
+
 def _draw_body(views, fig, feet, bend, pal, sil=False):
     """The whole armless body: torso + head, one palette.
     sil=True: silhouette only (the frost halo pass)."""
@@ -1050,6 +1103,35 @@ def prepare(dial=None, frost=None, backlight=None):
     _prep_key = key
 
 
+# --- the cuckoo porthole patch (v20) ---
+# A lazy scratch square (allocated on the first cuckoo frame,
+# like the night canvas): the sharp scene around his face -
+# dial region, sharp torso top, the raw head at lean scale -
+# composited onto the frame through a circular mask. The mask
+# is applied in horizontal span groups of 4 rows (the group's
+# span is its narrowest row's), each row one slice copy on the
+# canvas buffer: C memcpy, zero per-pixel Python, zero extra
+# framebuf calls - the v19 discipline.
+CUCKOO_R = 56              # porthole radius at full clear, px
+                           # (a 112 px circle on his face)
+CUCKOO_GROW = 1.2          # the lean-in head scale at full lean
+CUCKOO_PATCH = 120         # patch square side: circle + margin
+CUCKOO_GROUP = 4           # mask span group height, rows
+
+_patch = None              # (bytearray, FrameBuffer) over it
+
+
+def _patch_fb():
+    global _patch
+    if _patch is None:
+        buf = bytearray(CUCKOO_PATCH * CUCKOO_PATCH * 2)
+        fb = display.make_framebuffer(memoryview(buf),
+                                      CUCKOO_PATCH, CUCKOO_PATCH,
+                                      CUCKOO_PATCH)
+        _patch = (buf, fb)
+    return _patch
+
+
 class Figure:
     """Holds the smoothed body state. show.py feeds intent; update()
     advances the easing; pose() returns every joint (with the
@@ -1083,7 +1165,11 @@ class Figure:
             "bend": 0.0,
             "head_tilt": 0.0,    # -1..1 (carried; head is baked in
                                  # the rects in v1 - not rendered)
-            "lean_in": 0.0,      # 0..1, cuckoo (not in v1 shows)
+            "lean_in": 0.0,      # 0..1, cuckoo: the patch head's
+                                 # scale rides on it (v20)
+            "cuckoo_clear": 0.0,  # 0..1, cuckoo: the porthole's
+                                 # cleared fraction - draw() draws
+                                 # the sharp patch while > 0 (v20)
             # idle-life fields (Nov 15, 2026): show.py's routines
             # drive BOTH hands explicitly and hang props on them.
             # tip_l / tip_r override the hang (and the show tip)
@@ -1305,6 +1391,7 @@ class Figure:
             "bucket_x": self.bucket_x,
             "head_tilt": self.intent["head_tilt"],
             "lean_in": self.intent["lean_in"],
+            "cuckoo_clear": self.intent["cuckoo_clear"],
             # idle draw state, copied through for draw()
             "prop_l": self.intent["prop_l"],
             "prop_r": self.intent["prop_r"],
@@ -1404,6 +1491,12 @@ class Figure:
             hx, hy = pose["head"]
             _band_ellipse(canvas, hx, hy - 10, 20, 13, pal[_P_HAIR])
             _band_ellipse(canvas, hx, hy - 13, 15, 9, pal[_P_HAIR])
+        if pose["cuckoo_clear"] > 0.0:
+            # the cuckoo porthole (v20): the sharp patch goes
+            # over the frosted body but UNDER the arms - the
+            # cloth hand wipes in front of his face, on the
+            # glass, so it must draw after the patch
+            self._draw_cuckoo_patch(canvas, pose)
         for side in ("l", "r"):
             if side != behind:
                 self._draw_arm(canvas, pose, side, pal, hr)
@@ -1442,6 +1535,84 @@ class Figure:
             _band_poly(canvas, _seg_coords(cx, cy - 4, cx + 1,
                                            cy - 8, 2),
                        pal[_P_STEM])
+
+    def _draw_cuckoo_patch(self, canvas, pose):
+        """The cuckoo's clear circle (v20): build the sharp
+        scene in the patch buffer, then composite it onto the
+        frame through the circular mask at the pose's cleared
+        fraction.
+
+        Patch contents, back to front: the dial region (a
+        window blit - the glow and all, exactly as the frame's
+        own dial copy), the sharp torso top (_draw_torso in
+        the raw palette; the view-extent checks in the shape
+        helpers skip everything below the patch without a
+        call), and the sharp head at lean scale
+        (_draw_head_sharp). Framebuf cost: 1 blit + the few
+        shapes that touch the patch - counted in test_cuckoo.
+
+        The mask: rows are grouped CUCKOO_GROUP at a time and
+        each group copies at its narrowest row's span, so no
+        pixel outside the circle is ever touched; the 4-row
+        stepping is the wipe's soft edge. Every copy is a
+        slice assignment on the canvas buffer (the Canvas.blit
+        pattern) - no per-pixel Python anywhere."""
+        dial = self.dial if self.dial is not None \
+            else display.dial()
+        hx, hy = pose["head"]
+        cx = int(round(hx))
+        cy = int(round(hy))
+        px = cx - CUCKOO_PATCH // 2
+        py = cy - CUCKOO_PATCH // 2
+        if px < 0:
+            px = 0
+        if py < 0:
+            py = 0
+        if px > display.WIDTH - CUCKOO_PATCH:
+            px = display.WIDTH - CUCKOO_PATCH
+        if py > display.HEIGHT - CUCKOO_PATCH:
+            py = display.HEIGHT - CUCKOO_PATCH
+        buf, fb = _patch_fb()
+        fb.blit(dial.window(px, py, CUCKOO_PATCH, CUCKOO_PATCH),
+                0, 0)
+        views = [(fb, px, py, CUCKOO_PATCH)]
+        _draw_torso(views, self, pose["feet"],
+                    pose["bend_draw"], _RAW_PALETTE)
+        grow = 1.0 + (CUCKOO_GROW - 1.0) * pose["lean_in"]
+        _draw_head_sharp(views, hx, hy, grow)
+        # composite through the mask
+        r = CUCKOO_R * pose["cuckoo_clear"]
+        if r <= 0.0:
+            return
+        r2 = r * r
+        cb = canvas.buf
+        top = int(math.ceil(r))
+        dy = -top
+        while dy <= top:
+            g1 = min(dy + CUCKOO_GROUP - 1, top)
+            # the group's span is its narrowest row's: the row
+            # with the largest |dy| that is inside the circle
+            far = None
+            d = dy
+            while d <= g1:
+                if -r <= d <= r and (far is None
+                                      or abs(d) > far):
+                    far = abs(d)
+                d += 1
+            if far is not None:
+                half = int(math.sqrt(r2 - far * far))
+                x0 = cx - half
+                n = (2 * half + 1) * 2
+                d = dy
+                while d <= g1:
+                    if -r <= d <= r:
+                        row = cy + d
+                        dst = (row * display.WIDTH + x0) * 2
+                        src = ((row - py) * CUCKOO_PATCH
+                               + (x0 - px)) * 2
+                        cb[dst:dst + n] = buf[src:src + n]
+                    d += 1
+            dy = g1 + 1
 
     def draw_sleep(self, canvas, now_ms):
         """One sleep frame of the man onto the frame canvas

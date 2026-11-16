@@ -19,7 +19,8 @@
 # (the date line every face draws - day and month; v11), and the
 # sleep keys - sleep_enabled / sleep_start / sleep_end, whose
 # behaviour (lights out, he lies down, the hands snap pale;
-# SPEC Nov 13 addendum) landed in v15. The old skeleton's
+# SPEC Nov 13 addendum) landed in v15. cuckoo_enabled (v20)
+# silences the hourly cuckoo ritual without code. The old skeleton's
 # night_mode / night_dim checkbox fields are gone, and so is
 # tz_offset_h: the timezone is fixed UTC-7 in timekeep.py.
 import json
@@ -48,6 +49,7 @@ DEFAULT_CONFIG = {
     "backlight": 50,         # painted light behind him, 0..100
                              # (0 = the pre-v18 dial; v18)
     "show_date": True,       # the date on the face (v11)
+    "cuckoo_enabled": True,  # the hourly cuckoo ritual (v20)
     "sleep_enabled": False,  # lights-out hours (v15 behaviour)
     "sleep_start": "22:00",
     "sleep_end": "06:00",
@@ -152,9 +154,16 @@ Lights out - he sleeps</label> from
 <input name="sleep_end" size="5" value="%s"> (HH:MM, 24h)<br>
 <i>In those hours the room goes dark and he lies down to
 sleep; the hands keep time in pale ink.</i></p>
+<p><label><input type="checkbox" name="cuckoo_enabled" %s>
+Cuckoo on the hour</label><br>
+<i>On the hour, after he has repainted both hands, he leans
+in and wipes a clear circle in the frost - his face, sharp,
+for a moment. Never during lights-out hours.</i></p>
 <p><button type="submit">Save settings</button></p></form>
 <h3>Idle routines - try one</h3>
 <form method="POST" action="/tryit"><p>%s</p></form>
+<form method="POST" action="/trycuckoo"><p>
+<button type="submit">Try the cuckoo</button></p></form>
 <form method="POST" action="/update"><p>
 <button type="submit">Update now</button></p></form>
 <form method="POST" action="/restart"><p>
@@ -176,7 +185,9 @@ This clock is a tribute, built with admiration.</i></p>
         _show_date_options(cfg.get("show_date", True)),
         cfg["brightness"], cfg["frost"], cfg["backlight"],
         "checked" if cfg["sleep_enabled"] else "",
-        cfg["sleep_start"], cfg["sleep_end"], _tryit_buttons())
+        cfg["sleep_start"], cfg["sleep_end"],
+        "checked" if cfg.get("cuckoo_enabled", True) else "",
+        _tryit_buttons())
 
 
 def _urldecode(s):
@@ -254,6 +265,7 @@ def step(app):
                 cfg["backlight"] = bl
             except ValueError:
                 pass
+            cfg["cuckoo_enabled"] = "cuckoo_enabled" in form
             cfg["sleep_enabled"] = "sleep_enabled" in form
             if _valid_hhmm(form.get("sleep_start", "")):
                 cfg["sleep_start"] = form["sleep_start"]
@@ -272,6 +284,10 @@ def step(app):
             else:
                 conn.send("HTTP/1.0 200 OK\r\n\r\n"
                           "Unknown routine.")
+        elif "POST /trycuckoo" in req:
+            app["trycuckoo"] = True
+            conn.send("HTTP/1.0 200 OK\r\n\r\nQueued: cuckoo - "
+                      "it runs at the next gap.")
         elif "POST /update" in req:
             conn.send("HTTP/1.0 200 OK\r\n\r\nUpdating and rebooting.")
             conn.close()

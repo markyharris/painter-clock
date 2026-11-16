@@ -22,11 +22,17 @@
 # older loop shape: it advances the machine + figure without
 # drawing. demo(now_ms) runs one full minute step on demand.
 #
-# The hourly cuckoo ritual (SPEC.md 3.4) is NOT scheduled in v1:
-# its frost patch and sharp face sprite don't exist yet. The
-# frost_clear state and lean_in intent are carried so the ritual
-# drops in without an API change. On the hour both hands are still
-# fully wiped and repainted (the hour hand steps then anyway).
+# The hourly cuckoo ritual (SPEC.md 3.4) landed in v20 (Nov 16,
+# 2026): ~0.7 s after the on-hour show he leans in, wipes a
+# clear circle in the frost with his cloth, and his face shows
+# SHARP inside it (figure's raw-palette patch) before the
+# circle fogs back. It is chained off the hour show only -
+# never in the random idle mix - and it is suppressed entirely
+# in the sleep window (Mark, Nov 16: no cuckoo when he's
+# asleep; an hour boundary in-window just snaps, and a due
+# cuckoo is skipped, not deferred). On the hour both hands are
+# still fully wiped and repainted (the hour hand steps then
+# anyway).
 #
 # SLEEP (Nov 15, 2026, v15): in the admin sleep hours (set_sleep)
 # the scene is the night one - he lies down (figure.draw_sleep
@@ -75,6 +81,22 @@ IDLE_EVERY_RAND = 40000   # Mark asked for the routines more
                           # the "every 2-4 minutes" band)
 IDLE_MARGIN_MS = 1000     # a routine starts only if it ends at
                           # least this long before the boundary
+
+# The cuckoo (Nov 16, 2026, v20): the hourly ritual, chained
+# after the on-hour show. Phase lengths in ms - lean in, wipe
+# the circle open, hold the sharp face, fog creeps back, step
+# back - 7,200 total, the prototype's shape at the settled
+# design (SPEC 3.4 reconciled with the task's numbers).
+CUCKOO_DUR = 7200
+CUCKOO_DELAY_MS = 700     # the beat between the hour show's
+                          # end and the lean-in
+CUCKOO_LEAN_MS = 1000
+CUCKOO_WIPE_MS = 2500     # wipe ends (cumulative)
+CUCKOO_HOLD_MS = 3960     # hold ends
+CUCKOO_FOG_MS = 5472      # fog ends; the rest is the retreat
+CUCKOO_HAND_R = 62        # the cloth hand's circle radius -
+                          # just outside the porthole's 56, so
+                          # the cloth rides the rim it opens
 
 # The weight rock (Nov 15, 2026, v10 - Mark: "at minimum, he
 # needs to rock from one leg to the other as if impatiently
@@ -179,7 +201,7 @@ _IDLE_NEUTRAL = {
     "behind": None, "core": None, "watch_min": None,
     "mug_home": True, "apple_bites": 0, "hanky_puff": 0.0,
     "bend": 0.0, "follow": 0.0, "tau_ms": 200, "head_tilt": 0.0,
-    "lean_in": 0.0, "sway_x": 0.0,
+    "lean_in": 0.0, "sway_x": 0.0, "cuckoo_clear": 0.0,
 }
 
 
@@ -456,7 +478,17 @@ class Show:
         self.running = False
         self.last_total = None   # last day-extended total-minutes
                                  # accounted for (v12)
-        self.frost_clear = 0.0   # cuckoo porthole (not in v1 shows)
+        self.frost_clear = 0.0   # cuckoo porthole envelope 0..1
+                                 # (v20: driven by _run_cuckoo and
+                                 # mirrored into the figure intent)
+        self.cuckoo = None       # {"start"} while the ritual runs
+        self.cuckoo_enabled = True  # admin "cuckoo_enabled" key
+        self.trycuckoo = False   # admin "Try the cuckoo" queued
+        self._cuckoo_due = None  # ms tick when a chained cuckoo
+                                 # starts (hour show end + delay)
+        self._cuckoo_for = None  # the hour total already chained
+                                 # (fires exactly once per hour)
+        self._show_to = None     # the running show's target total
         self.idle = None         # {"type","start","dur"}
         self.next_idle_at = None  # ms tick when a routine may start
         self.last_idle_type = None  # never the same twice in a row
@@ -514,6 +546,14 @@ class Show:
         self.step_i = 0
         self.step_start = now_ms
         self.running = True
+        self._show_to = to_total
+        # a show pre-empts the cuckoo too (a boundary crossing
+        # mid-ritual - the fit check makes it a try-it-only
+        # case, but an NTP jump could land here): the ritual
+        # is cancelled outright, its envelope closed
+        self.cuckoo = None
+        self._cuckoo_due = None
+        self.frost_clear = 0.0
         if self.idle is not None:
             # a routine was cut short by the boundary: keep the
             # cadence - the next routine is a full gap away, not
@@ -528,7 +568,8 @@ class Show:
         self.fig.set_intent(tip_l=None, tip_r=None, prop_l=None,
                             prop_r=None, cap_off=False, behind=None,
                             core=None, watch_min=None, mug_home=True,
-                            apple_bites=0, hanky_puff=0.0, sway_x=0.0)
+                            apple_bites=0, hanky_puff=0.0, sway_x=0.0,
+                            lean_in=0.0, cuckoo_clear=0.0)
 
     # --- idle configuration (main.py / admin) ---
 
@@ -549,6 +590,26 @@ class Show:
             self.tryit = name
             return True
         return False
+
+    def set_cuckoo(self, enabled):
+        """The admin "cuckoo_enabled" key (v20), mirroring
+        set_sleep's pattern. Turning it off drops a chained
+        cuckoo that hasn't started and un-queues a try-it; one
+        already running finishes its 7.2 s."""
+        self.cuckoo_enabled = bool(enabled)
+        if not self.cuckoo_enabled:
+            self._cuckoo_due = None
+            self.trycuckoo = False
+
+    def queue_cuckoo(self):
+        """Admin "Try the cuckoo": run the ritual at the next
+        safe gap, like an idle try-it (the fit check applies,
+        and sleep defers it - see tick). Refused while the
+        cuckoo is disabled in admin."""
+        if not self.cuckoo_enabled:
+            return False
+        self.trycuckoo = True
+        return True
 
     def sleeping_at(self, total_minutes):
         """True if the given minutes-of-day fall in the sleep
@@ -575,6 +636,8 @@ class Show:
         is running. now_ms is a ticks_ms value; the countdown
         uses ticks_diff wrap semantics (2**30) without importing
         time - show.py stays clock-free."""
+        if self.cuckoo is not None:
+            return "cuckoo running"
         if self.idle is not None:
             return "%s running" % self.idle["type"]
         if self._sleeping():
@@ -600,7 +663,8 @@ class Show:
         displayed minute to the next. Returns False if no time has
         been set yet (update() never called) or he is asleep -
         no shows in the sleep window, not even bench ones."""
-        if self.last_total is None or self.running or self.asleep:
+        if self.last_total is None or self.running or self.asleep \
+                or self.cuckoo is not None:
             return False
         from_total = self.last_total
         self.start_show(from_total, from_total + 1, now_ms)
@@ -716,6 +780,14 @@ class Show:
             self.running = False
             self.idle = None
             self.plane_pos = None
+            # the cuckoo is suppressed in the window (v20): a
+            # chained one that hasn't started is SKIPPED, not
+            # deferred, and a running one is cancelled with
+            # everything else. A queued try-it stays queued -
+            # sleep defers try-its, as ever.
+            self.cuckoo = None
+            self._cuckoo_due = None
+            self.frost_clear = 0.0
             self._rest_intent()
             self._snap_hands(total_minutes)
             self.last_total = total_minutes
@@ -759,7 +831,9 @@ class Show:
             self.last_total = total_minutes
         if self.running:
             self._run_step(now_ms)
-        else:
+        elif self.cuckoo is not None:
+            self._run_cuckoo(now_ms)
+        elif not self._cuckoo_stage(now_ms):
             self._run_idle(now_ms)
         self.fig.update(dt, now_ms)
 
@@ -776,6 +850,7 @@ class Show:
                 self.fig.set_intent(tip=None, tool=None, follow=0.0,
                                     tau_ms=380, bend=0.0, head_tilt=0.0,
                                     lean_in=0.0)
+                self._chain_cuckoo(now_ms)
             return
         self._apply_step(step, p)
 
@@ -834,6 +909,128 @@ class Show:
             fig.set_intent(tip=None, tool=None, follow=0.05, tau_ms=320,
                            bend=0.0, lean_in=0.0,
                            head_tilt=math.sin(p * math.pi) * 0.3)
+
+    # --- the cuckoo: the hourly ritual (v20) ---
+
+    def _chain_cuckoo(self, now_ms):
+        """Called as a show completes: if it was the on-hour
+        show (its target total is an hour boundary), the cuckoo
+        is due CUCKOO_DELAY_MS later - once per hour, only when
+        enabled and awake. The due time occupies the stage like
+        a show does: _cuckoo_stage holds the idle scheduler off
+        during the beat, so no routine jumps into the gap."""
+        to = self._show_to
+        if to is None or to % 60 != 0:
+            return
+        if not self.cuckoo_enabled or self._sleeping():
+            return
+        if self._cuckoo_for == to:
+            return
+        self._cuckoo_for = to
+        self._cuckoo_due = now_ms + CUCKOO_DELAY_MS
+
+    def _fits_cuckoo(self):
+        """The idle fit rule, at the cuckoo's length: started
+        now, it ends at least IDLE_MARGIN_MS before the next
+        minute boundary."""
+        return CUCKOO_DUR + IDLE_MARGIN_MS \
+            <= (60 - self._sec) * 1000
+
+    def _start_cuckoo(self, now_ms):
+        self.cuckoo = {"start": now_ms}
+        self._cuckoo_due = None
+        # a pending try-it is satisfied by this firing, however
+        # it was triggered - never two rituals back to back
+        self.trycuckoo = False
+        self.plane_pos = None
+
+    def _cuckoo_stage(self, now_ms):
+        """The stage between shows, cuckoo first: start a due
+        (chained) or queued (try-it) ritual, or hold the stage
+        during the chained beat. Returns True when the frame
+        is the cuckoo's (or its beat) - the idle scheduler
+        then stands down, exactly as it does for a show."""
+        if self._cuckoo_due is not None:
+            if now_ms >= self._cuckoo_due:
+                self._start_cuckoo(now_ms)
+                self._run_cuckoo(now_ms)
+            else:
+                self._rest_intent()
+            return True
+        if self.trycuckoo and self.idle is None:
+            if self._fits_cuckoo():
+                self._start_cuckoo(now_ms)
+                self._run_cuckoo(now_ms)
+            else:
+                # too late in the minute - hold for the next
+                # gap, the try-it discipline
+                self._rest_intent()
+            return True
+        return False
+
+    def _run_cuckoo(self, now_ms):
+        """One frame of the ritual. The phases (ms from the
+        start): lean in with the cloth hand rising to the
+        circle's top (0-1000); the cloth traces the circle
+        while the porthole opens behind it (1000-2500); the
+        sharp face holds, hand down (2500-3960); the frost
+        creeps back (3960-5472); he steps back (5472-7200).
+        The porthole envelope is frost_clear - mirrored into
+        the figure intent, where draw() composites the sharp
+        patch; the lean rides lean_in, which scales the patch
+        head. At frost=0 the same choreography plays - only
+        the clear/fog contrast is absent, as designed."""
+        fig = self.fig
+        e = now_ms - self.cuckoo["start"]
+        if e >= CUCKOO_DUR:
+            self.cuckoo = None
+            self.frost_clear = 0.0
+            self._rest_intent()
+            # the ritual occupied its slot like a show: the
+            # next routine is a full gap away, not due at once
+            self.next_idle_at = now_ms + IDLE_EVERY_MIN \
+                + random.randint(0, IDLE_EVERY_RAND)
+            return
+        _, head, hang_l, _ = self._anchors()
+        hx, hy = head
+        if e < CUCKOO_LEAN_MS:
+            lean = ease(e / CUCKOO_LEAN_MS)
+            clear = 0.0
+            top = (hx, hy - CUCKOO_HAND_R)
+            tip = _lerp2(hang_l, top, ease(e / CUCKOO_LEAN_MS))
+            tool = "cloth"
+        elif e < CUCKOO_WIPE_MS:
+            q = (e - CUCKOO_LEAN_MS) \
+                / (CUCKOO_WIPE_MS - CUCKOO_LEAN_MS)
+            lean = 1.0
+            clear = ease(q)
+            th = 2 * math.pi * ease(q)
+            tip = (hx + CUCKOO_HAND_R * math.sin(th),
+                   hy - CUCKOO_HAND_R * math.cos(th))
+            tool = "cloth"
+        elif e < CUCKOO_HOLD_MS:
+            lean = 1.0
+            clear = 1.0
+            tip = None
+            tool = None
+        elif e < CUCKOO_FOG_MS:
+            q = (e - CUCKOO_HOLD_MS) \
+                / (CUCKOO_FOG_MS - CUCKOO_HOLD_MS)
+            lean = 1.0
+            clear = 1.0 - ease(q)
+            tip = None
+            tool = None
+        else:
+            q = (e - CUCKOO_FOG_MS) / (CUCKOO_DUR - CUCKOO_FOG_MS)
+            lean = 1.0 - ease(q)
+            clear = 0.0
+            tip = None
+            tool = None
+        self.frost_clear = clear
+        fig.set_intent(**_IDLE_NEUTRAL)
+        fig.set_intent(tip=tip, tool=tool, follow=0.15,
+                       tau_ms=200, lean_in=lean,
+                       cuckoo_clear=clear)
 
     # --- idle routines: the scheduler ---
 
@@ -989,8 +1186,10 @@ class Show:
         clockface.draw_hand(fb, self.min_hand["angle"],
                             clockface.MIN_LEN, clockface.MIN_W,
                             self.min_hand["reveal"])
-        # the cuckoo frost patch will composite here when it lands
-        # (SPEC 4.3): frost_clear drives the circular mask.
+        # the cuckoo's sharp patch composites inside
+        # figure.draw() (v20), driven by the cuckoo_clear
+        # intent - this older loop shape predates it and
+        # simply never sees a ritual (main.py uses update()).
 
 
 def step_to_min_angle(show):
