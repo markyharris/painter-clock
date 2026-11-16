@@ -51,13 +51,16 @@
 # and the cuckoo's clear-circle patch will draw the head sharp
 # the same way - see _draw_head).
 #
-# BACKLIGHT (Nov 16, 2026, v18): the "backlight" config key
-# paints light behind him - a warm glow baked into the day
-# dial (clockface) plus a warm rim pass on his silhouette,
-# baked here with the halo's mechanics and layered inside it.
-# At backlight=0 neither half draws: the pre-v18 picture,
-# pixel for pixel. The sleep scene is untouched (it has its
-# own raw night colours, no palette, no rim).
+# BACKLIGHT (Nov 16, 2026, v18; restructured v19): the
+# "backlight" config key paints light behind him - a warm
+# glow baked into the day dial (clockface), a warm rim pass
+# on the per-frame arms, and the baked halo tinted warm.
+# (v18 baked a second silhouette pass for the rim; it cost
+# as much as the halo itself and hung the board - see the
+# backlight-rim note below.) At backlight=0 none of it
+# draws: the pre-v18 picture, pixel for pixel. The sleep
+# scene is untouched (it has its own raw night colours, no
+# palette, no rim).
 #
 # IDLE LIFE (Nov 15, 2026): show.py's routines drive both hands
 # through intent tip_l / tip_r (full hang-to-hang paths) and hang
@@ -354,21 +357,30 @@ def _frost_state(frost):
     return tuple(_mix565(c, f) for c in _RAW_PALETTE), \
         (1 if frost < 75 else 2)
 
-# --- backlight rim (Nov 16, 2026, v18) ---
+# --- backlight rim (Nov 16, 2026, v18; restructured v19) ---
 # The dial half of the backlight lives in clockface (the glow
 # baked into the day dial); this is the figure half: a warm
-# rim of light on his silhouette, drawn with the frost halo's
-# own mechanics - the silhouette-only pass at cardinal offsets
-# in a flat colour, under the body - but WARM where the halo
-# is cool, and layered INSIDE it (halo scatter outermost, rim
-# hugging the edge, body on top). Strength is the same admin
+# rim of light on his silhouette. Strength is the same admin
 # "backlight" key the glow reads, handed to prepare(): the
 # colour warms with the strength (mixed from the dial cream
 # toward RIM_WARM) and the radius steps 1 -> 2 px at 75, the
-# halo's own step. At 0 there is no rim pass at all - the
-# pre-v18 rects, byte for byte. The per-frame arms get the
-# same pass in _draw_arm; the held props do not (small, and
-# mostly inside the body's own rim zone).
+# halo's own step. At 0 there is no rim at all - the pre-v18
+# picture, byte for byte.
+#
+# v19 restructure (the v18 board hang): v18 ALSO baked a rim
+# pass into every rect - a second full silhouette pass at
+# cardinal offsets in the rim colour, layered inside the
+# halo. Measured on the desk harness it duplicated the halo
+# pass prim for prim: +5,178 prims on prepare()'s 7,449
+# (1.70x), and a slider save / warm reboot pays prepare()
+# in full - on the board both hung (see SPEC v19). The rim
+# now lives ONLY where it costs per frame, not per bake:
+# the per-frame arm pass in _draw_arm (a few widened polys).
+# The baked body's warm edge comes from the halo mechanism
+# itself: when backlight > 0, prepare() tints the halo
+# colour from FROST_HALO toward RIM_WARM by the strength,
+# so the frost scatter around him glows warm instead of
+# cool. Same prim count as v17 at every strength.
 DEFAULT_BACKLIGHT = 0            # module state until main.py
                                  # applies the config (whose
                                  # default is 50 - admin.py)
@@ -377,8 +389,11 @@ RIM_WARM = (255, 216, 150)       # 888 - lamplight on an edge
 _backlight = DEFAULT_BACKLIGHT   # current strength, 0..100
 _rim_r = 0                       # rim dilation radius, px
 _rim_col = None                  # the rim colour at _backlight
-_rim_pal = None                  # flat rim palette for the
-                                 # rect bake (silhouette pass)
+_halo_col = FROST_HALO           # the halo colour at the
+                                 # current backlight (tinted
+                                 # toward warm when lit)
+_halo_pal = _HALO_PALETTE        # flat halo palette for the
+                                 # rect bake, in _halo_col
 
 
 def _backlight_state(backlight):
@@ -898,24 +913,16 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
         r = _halo_r
         for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
             if with_bucket:
-                _draw_bucket(views, _HALO_PALETTE, dx, dy, True)
+                _draw_bucket(views, _halo_pal, dx, dy, True)
             _draw_body(views, fig,
                        (HOME_FEET[0] + ox + dx,
                         HOME_FEET[1] + oy + dy), bend,
-                       _HALO_PALETTE, True)
-    # the backlight rim (v18): the same silhouette pass in the
-    # warm rim colour, drawn AFTER the halo so it hugs the
-    # body's edge inside the cool scatter - light catching the
-    # outline of a man standing in front of the glow.
-    if _rim_r:
-        r = _rim_r
-        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
-            if with_bucket:
-                _draw_bucket(views, _rim_pal, dx, dy, True)
-            _draw_body(views, fig,
-                       (HOME_FEET[0] + ox + dx,
-                        HOME_FEET[1] + oy + dy), bend,
-                       _rim_pal, True)
+                       _halo_pal, True)
+    # (the backlight's baked edge is the halo pass itself,
+    # tinted warm by prepare() when lit - v19; v18's separate
+    # rim silhouette pass here doubled the bake's prim count
+    # and hung the board. The true rim pass survives only in
+    # _draw_arm, per frame.)
     # bucket at its home place, then the body at the grid point
     if with_bucket:
         _draw_bucket(views, _pal)
@@ -935,11 +942,7 @@ def _build_bucket_rect(dial, bucket_box):
     if _halo_r:
         r = _halo_r
         for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
-            _draw_bucket(views, _HALO_PALETTE, dx, dy, True)
-    if _rim_r:
-        r = _rim_r
-        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
-            _draw_bucket(views, _rim_pal, dx, dy, True)
+            _draw_bucket(views, _halo_pal, dx, dy, True)
     _draw_bucket(views, _pal)
     return bands
 
@@ -961,12 +964,14 @@ def prepare(dial=None, frost=None, backlight=None):
     the baked rects.
 
     backlight: the backlight strength 0..100 (the "backlight"
-    config key, v18); None keeps the current value. Only the
-    rim state derives from it here - the glow half of the
+    config key, v18); None keeps the current value. The rim
+    state (per-frame arms) and the halo tint (the bake's warm
+    edge, v19) derive from it here - the glow half of the
     effect lives in the dial (clockface), which the caller
     re-renders before calling."""
     global _rects, _bucket_bands, _prep_key, _track, _frost, \
-        _pal, _halo_r, _backlight, _rim_r, _rim_col, _rim_pal
+        _pal, _halo_r, _backlight, _rim_r, _rim_col, \
+        _halo_col, _halo_pal
     if dial is None:
         dial = display.dial()
     if frost is not None:
@@ -983,15 +988,26 @@ def prepare(dial=None, frost=None, backlight=None):
         _backlight = int(backlight)
     _pal, _halo_r = _frost_state(_frost)
     _rim_r, _rim_col = _backlight_state(_backlight)
-    _rim_pal = (_rim_col,) * len(_RAW_PALETTE) if _rim_r \
-        else None
+    if _backlight > 0:
+        # the bake's warm edge (v19): the halo colour itself,
+        # mixed from FROST_HALO toward RIM_WARM by the
+        # strength. At 0 the palette is _HALO_PALETTE itself -
+        # the pre-v18 bake, byte for byte.
+        _halo_col = _mix565_to(FROST_HALO, RIM_WARM,
+                               _backlight / 100.0)
+        _halo_pal = (_halo_col,) * len(_RAW_PALETTE)
+    else:
+        _halo_col = FROST_HALO
+        _halo_pal = _HALO_PALETTE
     key = (id(dial), _dial_fingerprint(dial), _frost, _backlight)
     if _rects is not None and _prep_key == key:
         return
     # content bboxes first: body per pose + bucket, measured at
     # home by extent tracking (no drawing, no scratch canvas);
-    # the pad leaves room for the halo AND rim passes around
-    # the shapes (whichever reaches farther)
+    # the pad leaves room for the halo pass around the shapes
+    # (the max() still reserves the rim's reach, as v18 sized
+    # the rects - the geometry is unchanged; the rim itself
+    # is per-frame now and never clipped by a rect)
     pad = 2 + max(_halo_r, _rim_r)
     fig = Figure()
     body_box = {}
@@ -1317,11 +1333,11 @@ class Figure:
             _band_poly(canvas, _seg_coords(sh[0], sh[1],
                                            el[0], el[1],
                                            11 + 2 * hr),
-                       FROST_HALO)
+                       _halo_col)
             _band_poly(canvas, _seg_coords(el[0], el[1],
                                            ha[0], ha[1],
                                            9 + 2 * hr),
-                       FROST_HALO)
+                       _halo_col)
         if _rim_r:
             _band_poly(canvas, _seg_coords(sh[0], sh[1],
                                            el[0], el[1],

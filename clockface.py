@@ -263,32 +263,59 @@ GLOW_WARM = (255, 234, 192)     # 888 warm white the ground
                                 # mostly the blue falling away
 GLOW_PEAK = 0.85                # centre mix at strength 100
 
-# 4x4 Bayer matrix for the glow's ordered dither (see
-# _paint_glow): the threshold that dissolves the gradient's
-# quantisation steps into texture.
+# 4x4 Bayer matrix: v19's glow takes its per-row dither
+# threshold from it (see _paint_glow) - one threshold per
+# row, cycling with a 16-row period, so the colour steps
+# land at different x on neighbouring rows and read as
+# texture rather than as rings.
 _BAYER4 = ((0, 8, 2, 10), (12, 4, 14, 6),
            (3, 11, 1, 9), (15, 7, 13, 5))
 
 
-def _paint_glow(buf, strength):
-    """Paint the glow into a dial buffer (480x480 RGB565 LE -
-    the Canvas's own bytes), per pixel, with ordered
-    dithering. Why not filled-ellipse rings, the dial's usual
-    C primitives? The whole colour journey from cream to warm
-    is only ~5 blue / ~2 red / ~2 green LSBs of RGB565, so
-    ANY solid-colour stepping - rings at any fineness - rounds
-    into a handful of hard-edged concentric bands: a target,
-    not a glow (first desk preview, v18). The cure is the
-    classic one: compute the ideal colour per pixel as
-    floats in 565 space and quantise with a Bayer threshold,
-    so each step dissolves into a fine checker texture the
-    eye blends back into a gradient. The falloff is
-    (1 - t^2)^2 over the squared distance - zero slope at
-    centre and edge, and no sqrt per pixel (one per row, for
-    the chord). ~102k pixels, render-time only: the dial
-    render is already a seconds-scale, on-change cost
-    (figure.prepare() is ~4 s on the board), and frames copy
-    the finished layer - per-frame cost is unchanged."""
+def _glow_dx(f, dy, r2):
+    """Chord half-width at falloff f on the row dy from the
+    glow centre: f = (1 - (dx^2 + dy^2)/r2)^2 inverted."""
+    v = (1.0 - math.sqrt(f)) * r2 - dy * dy
+    if v <= 0.0:
+        return 0.0
+    return math.sqrt(v)
+
+
+def _paint_glow(fb, strength):
+    """Paint the glow into the day dial as horizontal span
+    fills through the band windows - C framebuf primitives
+    only, zero per-pixel Python work (v19).
+
+    History: v18 computed the ideal colour per pixel in a
+    Python loop (~102k iterations, ~141k byte writes into
+    the dial buffer). On the desk that is 0.2 s; on the
+    board it hung the clock outright - a slider save and a
+    warm reboot both re-render the dial, and neither came
+    back (Mark, Nov 16, 2026: unplug-the-USB hangs, both).
+    The first v18 cut - concentric filled ellipses - is not
+    the way back either: the whole cream-to-warm journey is
+    only ~+1 red / -2 green / -4 blue LSBs of RGB565, so
+    solid rings at any fineness round into a handful of
+    hard-edged bands: a target, not a glow.
+
+    The span construction keeps v18's colour math (same
+    endpoints, same (1 - t^2)^2 falloff, same Bayer
+    threshold idea) but solves each row analytically: with
+    one threshold per row, each channel's rounded value is
+    a step function of the falloff f, so the row splits
+    into a handful of constant-colour runs at the channels'
+    crossing f-values (at most ~8 crossings - the journey
+    is a few LSBs). Each run is one fill_rect per side.
+    The threshold cycles per row (Bayer, 16-row period),
+    so neighbouring rows put their steps at different x
+    and the eye reads texture, not rings - the same trick
+    v18's per-pixel dither played, at row granularity.
+    Runs whose colour is the ground itself are skipped
+    (the ground pass already painted them) - which is also
+    what keeps the date rows (88..111) bit-exact: at their
+    distance the mix never reaches a rounding boundary.
+    A few thousand fill_rects and ~361 rows of small float
+    work per render, against v18's ~102k loop iterations."""
     s = strength / 100.0 * GLOW_PEAK
     r2 = float(GLOW_R * GLOW_R)
     # channel endpoints as floats in 565 units: the cream
@@ -296,39 +323,79 @@ def _paint_glow(buf, strength):
     cr = (CREAM >> 11) & 0x1F
     cg = (CREAM >> 5) & 0x3F
     cb = CREAM & 0x1F
-    tr = GLOW_WARM[0] * 31.0 / 255.0
-    tg = GLOW_WARM[1] * 63.0 / 255.0
-    tb = GLOW_WARM[2] * 31.0 / 255.0
-    dr = (tr - cr) * s
-    dg = (tg - cg) * s
-    db = (tb - cb) * s
-    y = GLOW_CY - GLOW_R
-    while y <= GLOW_CY + GLOW_R:
-        dy = y - GLOW_CY
-        rem = GLOW_R * GLOW_R - dy * dy
-        if rem >= 0:
-            half = int(math.sqrt(rem))
-            brow = _BAYER4[y & 3]
-            row = y * 960
-            x = GLOW_CX - half
-            while x <= GLOW_CX + half:
-                dx = x - GLOW_CX
-                u = (dx * dx + dy * dy) / r2
-                f = 1.0 - u
-                f = f * f
-                if f > 0.005:
-                    thr = (brow[x & 3] + 0.5) / 16.0
-                    col = ((int(cr + dr * f + thr) << 11)
-                           | (int(cg + dg * f + thr) << 5)
-                           | int(cb + db * f + thr))
-                    i = row + x * 2
-                    lo = col & 0xFF
-                    hi = (col >> 8) & 0xFF
-                    if buf[i] != lo or buf[i + 1] != hi:
-                        buf[i] = lo
-                        buf[i + 1] = hi
-                x += 1
-        y += 1
+    dr = (GLOW_WARM[0] * 31.0 / 255.0 - cr) * s
+    dg = (GLOW_WARM[1] * 63.0 / 255.0 - cg) * s
+    db = (GLOW_WARM[2] * 31.0 / 255.0 - cb) * s
+    chans = ((cr, dr), (cg, dg), (cb, db))
+    bands = list(fb.band_windows())
+    nb = len(bands)
+    bi = 0
+    while bi < nb:
+        win, y0 = bands[bi]
+        if bi + 1 < nb:
+            ybot = bands[bi + 1][1] - 1
+        else:
+            ybot = GLOW_CY + GLOW_R
+        y = max(GLOW_CY - GLOW_R, y0)
+        yend = min(GLOW_CY + GLOW_R, ybot)
+        while y <= yend:
+            dy = y - GLOW_CY
+            half = int(math.sqrt(GLOW_R * GLOW_R - dy * dy))
+            f0 = 1.0 - (dy * dy) / r2
+            f0 = f0 * f0
+            thr = (_BAYER4[y & 3][(y >> 2) & 3] + 0.5) / 16.0
+            # the f-values where a channel's rounded value
+            # changes: value(f) = c0 + dc*f + thr crossing an
+            # integer. Collect them all, plus the endpoints.
+            cuts = [0.0, f0]
+            for c0, dc in chans:
+                if dc == 0.0:
+                    continue
+                va = c0 + thr
+                vb = va + dc * f0
+                k = int(math.floor(min(va, vb)))
+                kend = int(math.ceil(max(va, vb)))
+                while k <= kend:
+                    fk = (k - thr - c0) / dc
+                    if 0.0 < fk < f0:
+                        cuts.append(fk)
+                    k += 1
+            cuts.sort()
+            # intervals of constant colour, centre outward:
+            # interval (flo, fhi] in f is dx in [dx(fhi),
+            # dx(flo)) - mirrored spans at one colour each.
+            i = len(cuts) - 1
+            while i > 0:
+                fhi = cuts[i]
+                flo = cuts[i - 1]
+                fmid = (fhi + flo) * 0.5
+                col = ((int(cr + dr * fmid + thr) << 11)
+                       | (int(cg + dg * fmid + thr) << 5)
+                       | int(cb + db * fmid + thr))
+                if col != CREAM:
+                    lo_i = int(math.ceil(
+                        _glow_dx(fhi, dy, r2) - 1e-6))
+                    if flo > 0.0:
+                        hi_i = int(math.ceil(
+                            _glow_dx(flo, dy, r2) - 1e-6)) - 1
+                    else:
+                        hi_i = half
+                    if hi_i > half:
+                        hi_i = half
+                    if lo_i <= hi_i:
+                        if lo_i == 0:
+                            win.fill_rect(GLOW_CX - hi_i,
+                                          y - y0,
+                                          2 * hi_i + 1, 1, col)
+                        else:
+                            w = hi_i - lo_i + 1
+                            win.fill_rect(GLOW_CX + lo_i,
+                                          y - y0, w, 1, col)
+                            win.fill_rect(GLOW_CX - hi_i,
+                                          y - y0, w, 1, col)
+                i -= 1
+            y += 1
+        bi += 1
 
 
 def point_at(angle_deg, dist):
@@ -501,9 +568,10 @@ def draw_dial(fb, night=False):
     # the backlight glow is a DAY behaviour (v18): the night
     # dial is the room with its light off and never glows.
     # Strength 0 skips it entirely - the pre-v18 dial, byte
-    # for byte. It is painted per pixel into the buffer
-    # BETWEEN the ground pass and the tick pass (see
-    # _paint_glow for why it is not drawn with primitives).
+    # for byte. It is drawn as span fills BETWEEN the ground
+    # pass and the tick pass (see _paint_glow for the
+    # construction, and for why neither rings nor a per-pixel
+    # loop would do).
     glow = not night and _backlight > 0
     r1 = DIAL_R - 8
     ticks = []
@@ -524,7 +592,7 @@ def draw_dial(fb, night=False):
                     shade, True)
         win.ellipse(CX, CY - y0, DIAL_R, DIAL_R, ground, True)
     if glow:
-        _paint_glow(fb.buf, _backlight)
+        _paint_glow(fb, _backlight)
     for win, y0 in fb.band_windows():
         for coords in ticks:
             win.poly(0, -y0, coords, tick, True)
