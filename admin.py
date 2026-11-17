@@ -23,6 +23,20 @@
 # silences the hourly cuckoo ritual without code. The old skeleton's
 # night_mode / night_dim checkbox fields are gone, and so is
 # tz_offset_h: the timezone is fixed UTC-7 in timekeep.py.
+#
+# v24 (Nov 16, 2026): the admin UX pass. Presentation only - the
+# config keys, the POST handlers' semantics and the apply-live
+# paths are exactly as before. The page is organised into
+# colour-tinted sections in the Visual Logbook admin's manner
+# (a fieldset + legend per section, a pastel tint each); the
+# three 0..255 / 0..100 settings are real range sliders with a
+# live numeric readout; a pointer-clock icon (ICON_SVG below)
+# is the browser tab's favicon and sits beside the title in the
+# header; and every action lands back on the admin page itself -
+# Save / Try-it / Try-cuckoo return the page with a .msg note,
+# while the two rebooting actions (Update now, Restart) return
+# a small auto-refreshing page that reloads the admin page once
+# the clock is back, instead of the old bare-text landings.
 import json
 import socket
 
@@ -56,6 +70,26 @@ DEFAULT_CONFIG = {
 }
 
 FACES = ("painter", "classic", "digital")
+
+# The tab / header icon: an analog clock face, hands (pointers)
+# at the classic 10:10, in the dial's own cream and ink. One
+# SVG literal serves both spots - inline in the header, and as
+# the favicon via a data URI derived from it - so the pair can
+# never drift and no extra file ships.
+ICON_SVG = ("<svg xmlns='http://www.w3.org/2000/svg' "
+            "viewBox='0 0 32 32'>"
+            "<circle cx='16' cy='16' r='13' fill='#fff8ea' "
+            "stroke='#5b4636' stroke-width='2.6'/>"
+            "<path d='M16 5.5v2.4M16 24.1v2.4M5.5 16h2.4"
+            "M24.1 16h2.4' stroke='#5b4636' stroke-width='1.7'/>"
+            "<path d='M16 16L10.2 12.6M16 16L23.8 11.4' "
+            "stroke='#5b4636' stroke-width='2.5' "
+            "stroke-linecap='round' fill='none'/>"
+            "<circle cx='16' cy='16' r='1.9' fill='#5b4636'/>"
+            "</svg>")
+ICON_URI = ("data:image/svg+xml;utf8,"
+            + ICON_SVG.replace("#", "%23").replace("<", "%3C")
+            .replace(">", "%3E"))
 
 _srv = None
 
@@ -116,78 +150,151 @@ def _show_date_options(current):
 
 
 def _tryit_buttons():
+    # These live inside the settings <form> (the Cuckoo & idle
+    # life section); formaction posts each to /tryit instead,
+    # whose handler reads only the "routine" field - the same
+    # semantics as the old separate form.
     out = ""
     for name, label in TRYIT:
-        out += '<button name="routine" value="%s">%s</button> ' \
-            % (name, label)
+        out += '<button name="routine" value="%s" ' \
+            'formaction="/tryit">%s</button> ' % (name, label)
     return out
 
 
-def _page(app):
+def _slider(name, label, top, value):
+    """One range slider with a live numeric readout: dragging
+    updates the number beside it (the oninput), and the field
+    name / range are the config key's own, unchanged."""
+    return ('<p>%s <input type="range" name="%s" min="0" '
+            'max="%d" value="%s" oninput="document.'
+            'getElementById(\'v_%s\').textContent=this.value"> '
+            '<span class="val" id="v_%s">%s</span></p>'
+            % (label, name, top, value, name, name, value))
+
+
+def _page(app, msg=""):
     u = updater.STATE
     upd = "UPDATE AVAILABLE (%d file(s))" % u["files"] \
         if u["available"] else "Up to date"
     if u["failed"]:
         upd = "Update check failed: %s" % u["failed"]
     cfg = app["config"]
+    msg_html = '<p class="msg">%s</p>' % msg if msg else ""
     return """<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Painter Clock</title></head><body>
-<h2>Painter Clock</h2>
+<title>Painter Clock</title>
+<link rel="icon" href="%s">
+<style>
+body{font-family:sans-serif;margin:16px;max-width:860px}
+fieldset{margin:12px 0;border:1px solid #bbb;border-radius:6px}
+legend{font-weight:bold;padding:0 4px}
+input{margin:2px}
+input[type=range]{width:230px;vertical-align:middle}
+.val{display:inline-block;min-width:2.2em;font-weight:bold}
+.msg{background:#efe;border:1px solid #9c9;padding:6px}
+.sec-status{background:#e9f1fd}
+.sec-display{background:#e7f6ec}
+.sec-frost{background:#e2f5f7}
+.sec-sleep{background:#e9e4f5}
+.sec-idle{background:#fff6d9}
+.sec-update{background:#fdeee2}
+.sec-system{background:#fdeaea}
+h1 svg{height:30px;width:30px;vertical-align:-6px}
+</style></head><body>
+<h1>%s Painter Clock</h1>
+%s
+<fieldset class="sec-status"><legend>Status</legend>
 <p>Time: %s (source: %s)<br>
 Wi-Fi: %s<br>
 Display: %s &middot; Uptime: %s &middot; Code: %s<br>
 Idle: %s<br>
-Update: %s</p>
+Update: %s</p></fieldset>
 <form method="POST" action="/settings">
+<fieldset class="sec-display"><legend>Display</legend>
 <p>Face: <select name="face">%s</select></p>
+%s
 <p>Show date: <select name="show_date">%s</select></p>
-<p>Brightness (0-255): <input name="brightness" size="4"
-value="%s"></p>
-<p>Frosted glass (0-100): <input name="frost" size="4"
-value="%s"></p>
-<p>Backlight (0-100): <input name="backlight" size="4"
-value="%s"></p>
+</fieldset>
+<fieldset class="sec-frost"><legend>Frost &amp; backlight</legend>
+%s
+%s
+</fieldset>
+<fieldset class="sec-sleep"><legend>Sleep</legend>
 <p><label><input type="checkbox" name="sleep_enabled" %s>
 Lights out - he sleeps</label> from
 <input name="sleep_start" size="5" value="%s"> to
 <input name="sleep_end" size="5" value="%s"> (HH:MM, 24h)<br>
 <i>In those hours the room goes dark and he lies down to
 sleep; the hands keep time in pale ink.</i></p>
+</fieldset>
+<fieldset class="sec-idle"><legend>Cuckoo &amp; idle life</legend>
 <p><label><input type="checkbox" name="cuckoo_enabled" %s>
 Cuckoo on the hour</label><br>
 <i>On the hour, after he has repainted both hands, he leans
 in and wipes a clear circle in the frost - his face, sharp,
 for a moment. Never during lights-out hours.</i></p>
-<p><button type="submit">Save settings</button></p></form>
-<h3>Idle routines - try one</h3>
-<form method="POST" action="/tryit"><p>%s</p></form>
-<form method="POST" action="/trycuckoo"><p>
-<button type="submit">Try the cuckoo</button></p></form>
+<p><button type="submit">Save settings</button></p>
+<p>Idle routines - try one (it runs at the next gap):<br>
+%s
+<button formaction="/trycuckoo">Try the cuckoo</button></p>
+</fieldset>
+</form>
+<fieldset class="sec-update"><legend>Update</legend>
+<p>Update: %s</p>
 <form method="POST" action="/update"><p>
 <button type="submit">Update now</button></p></form>
+</fieldset>
+<fieldset class="sec-system"><legend>System</legend>
 <form method="POST" action="/restart"><p>
 <button type="submit">Restart</button></p></form>
 <h3>Rehome (new Wi-Fi / new owner)</h3>
 <p>Unplug. Plug back in and, just AFTER it starts, hold the BOOT
 button for a second. The clock starts the <b>PainterClock-Setup</b>
 network - join it with a phone and follow the captive portal.</p>
+</fieldset>
 <hr>
 <p><i>An homage to Maarten Baas and his Schiphol Clock
 (Amsterdam Airport Schiphol, 2016), from the Real Time series -
 the man behind the glass who paints the time, minute by minute.
 This clock is a tribute, built with admiration.</i></p>
 </body></html>""" % (
+        ICON_URI, ICON_SVG, msg_html,
         app["time_str"], app["time_source"], app["wifi"],
         app["display_state"], app["uptime"], app["version"],
         app.get("idle_str", "-"), upd,
         _face_options(cfg["face"]),
+        _slider("brightness", "Brightness (0-255):", 255,
+                cfg["brightness"]),
         _show_date_options(cfg.get("show_date", True)),
-        cfg["brightness"], cfg["frost"], cfg["backlight"],
+        _slider("frost", "Frosted glass (0-100):", 100,
+                cfg["frost"]),
+        _slider("backlight", "Backlight (0-100):", 100,
+                cfg["backlight"]),
         "checked" if cfg["sleep_enabled"] else "",
         cfg["sleep_start"], cfg["sleep_end"],
         "checked" if cfg.get("cuckoo_enabled", True) else "",
-        _tryit_buttons())
+        _tryit_buttons(), upd)
+
+
+def _refresh_page(verb, delay):
+    """The rebooting actions' answer: a minimal page that sends
+    the browser back to the admin page once the clock is up
+    again (meta refresh), with a manual link if it stalls. The
+    flow still ends on the admin page, never a dead end."""
+    return """<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="%d;url=/">
+<title>Painter Clock</title></head><body>
+<p><b>%s</b></p>
+<p>The clock is rebooting - this page will reload the admin
+page by itself in about %d seconds. If it doesn't,
+<a href="/">tap here</a>.</p>
+</body></html>""" % (delay, verb, delay)
+
+
+def _send_page(conn, app, msg=""):
+    conn.send("HTTP/1.0 200 OK\r\nContent-Type: text/html"
+              "\r\n\r\n" + _page(app, msg))
 
 
 def _urldecode(s):
@@ -273,33 +380,34 @@ def step(app):
                 cfg["sleep_end"] = form["sleep_end"]
             save_config(cfg)
             app["changed"] = True
-            conn.send("HTTP/1.0 200 OK\r\n\r\nSaved.")
+            _send_page(conn, app, "Settings saved.")
         elif "POST /tryit" in req:
             form = _parse_form(req)
             name = form.get("routine", "")
             if name in showmod.IDLE_DUR:
                 app["tryit"] = name
-                conn.send("HTTP/1.0 200 OK\r\n\r\nQueued: "
-                          + name + " - it runs at the next gap.")
+                _send_page(conn, app, "Queued: " + name +
+                           " - it runs at the next gap.")
             else:
-                conn.send("HTTP/1.0 200 OK\r\n\r\n"
-                          "Unknown routine.")
+                _send_page(conn, app, "Unknown routine.")
         elif "POST /trycuckoo" in req:
             app["trycuckoo"] = True
-            conn.send("HTTP/1.0 200 OK\r\n\r\nQueued: cuckoo - "
-                      "it runs at the next gap.")
+            _send_page(conn, app, "Queued: cuckoo - "
+                       "it runs at the next gap.")
         elif "POST /update" in req:
-            conn.send("HTTP/1.0 200 OK\r\n\r\nUpdating and rebooting.")
+            conn.send("HTTP/1.0 200 OK\r\nContent-Type: text/html"
+                      "\r\n\r\n" + _refresh_page(
+                          "Updating and rebooting.", 60))
             conn.close()
             updater.apply()  # reboots on success
         elif "POST /restart" in req:
-            conn.send("HTTP/1.0 200 OK\r\n\r\nRestarting.")
+            conn.send("HTTP/1.0 200 OK\r\nContent-Type: text/html"
+                      "\r\n\r\n" + _refresh_page("Restarting.", 30))
             conn.close()
             import machine
             machine.reset()
         else:
-            conn.send("HTTP/1.0 200 OK\r\nContent-Type: text/html"
-                      "\r\n\r\n" + _page(app))
+            _send_page(conn, app)
     except Exception as exc:
         print("admin: request error:", exc)
     finally:
