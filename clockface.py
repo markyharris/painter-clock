@@ -42,6 +42,8 @@ import framebuf
 import math
 from array import array
 
+import smoothfont
+
 NAME = "painter"
 
 CX = 240
@@ -60,21 +62,31 @@ HOUR_W = 12           # hour hand: shorter and fatter
 # until then NUMERALS=True still draws the tick dial.
 NUMERALS = False
 
-# The date line (v11; v14: scaled up): "Sun 15 Nov" in the
-# dial's ink, upper centre, drawn per frame by compose() when
-# enabled - painted on the glass like the hands, so NOT
-# frost-veiled (figure.py's veil is for the man behind the
-# glass, not for what's painted on it). v11 drew the firmware
-# framebuf's built-in 8x8 font at 1x and Mark found it "way
-# too small to read", so v14 grows every glyph pixel to a
-# DATE_SCALE square (glyph box 24 px tall). Rows
-# DATE_Y..DATE_Y+DATE_H-1 sit in open cream: clear of the rim
-# ticks (their inner edge is y 35 at the top) and of his cap
-# even at the body's maximum rise (cap top 158 - 39 = 119).
-DATE_Y = 88
-DATE_SCALE = 3
-DATE_H = 8 * DATE_SCALE        # the glyph box: 24 px tall
-DATE_CW = 8 * DATE_SCALE       # ...and 24 px per character
+# The date line (v11; v14: scaled up; v27: SMOOTH):
+# "Sun 15 Nov" in the dial's ink, upper centre, drawn per
+# frame by compose() when enabled - painted on the glass
+# like the hands, so NOT frost-veiled (figure.py's veil is
+# for the man behind the glass, not for what's painted on
+# it). v11 drew the firmware framebuf's built-in 8x8 font
+# at 1x and Mark found it "way too small to read"; v14 grew
+# every glyph pixel to a 3x square - readable, but blocks.
+# v27 renders the line in smoothfont's "date" strike
+# (Liberation Sans at full size, anti-aliased - see
+# smoothfont.py): same position, same ink, no blocks.
+# Rows DATE_Y..DATE_Y+DATE_H-1 sit in open cream: clear of
+# the rim ticks (their inner edge is y 35 at the top) and
+# of his cap even at the body's maximum rise (cap top
+# 158 - 39 = 119) - DATE_Y is chosen so the strike's line
+# box ENDS at y 116, inside that clearance.
+_DATE_ASC, _DATE_DESC, _DATE_CAP_OFF = smoothfont.metrics(
+    "date")
+DATE_H = _DATE_ASC + _DATE_DESC   # the strike's line box
+DATE_Y = 116 - DATE_H
+DATE_CW = 24       # an upper bound on the smooth strike's
+                   # per-character advance - the desk
+                   # tests' date-box width, as it was for
+                   # the 3x blocks (the real strip is
+                   # narrower and centred the same way)
 _WEEKDAYS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -165,17 +177,15 @@ def _pat(colour):
 
 def text_strip(s, colour, ground, scale):
     """A string as an opaque strip (bytes, width, height) at
-    the given scale - the project's one text renderer, shared
-    by the date (DATE_SCALE) and the setup screen (setupface,
-    several scales). The 8x8 font is drawn once into a small
-    scratch FrameBuffer (nowhere near the full-size FrameBuffer
-    the firmware wedges on), then each set pixel grows to a
-    scale-square. The strip's ground is whatever the caller
-    says is under the box: the date passes the dial colour
-    (its box sits in plain ground, so copying the strip in
-    opaquely is pixel-exact); setupface passes a key colour
-    and blits the strip keyed, so its lettering lands ON the
-    dial like paint, ticks and all showing through."""
+    the given scale - the project's ORIGINAL text renderer:
+    the 8x8 font drawn once into a small scratch FrameBuffer
+    (nowhere near the full-size FrameBuffer the firmware
+    wedges on), then each set pixel grows to a scale-square.
+    RETIRED in v27: every shipped text path (the date, the
+    digital face, both boot screens) renders through
+    smoothfont.py now. Kept because the desk harness still
+    renders the old blocks for before/after comparisons -
+    do not build new callers on it."""
     key = (s, colour, ground, scale)
     hit = _strips.get(key)
     if hit is not None:
@@ -201,28 +211,30 @@ def text_strip(s, colour, ground, scale):
 
 
 def _date_strip(s, colour, ground):
-    """The date string at DATE_SCALE, as an opaque strip
-    (bytes, width) - text_strip at the date's scale, with the
-    date's two-value return. The strip's ground is the dial
-    colour under the box (CREAM by day, NIGHT_GROUND by
-    night): the dial under the box is plain ground (the box's
-    farthest corner sits ~194 px from centre, inside the 233
-    disc, clear of ticks and of his cap), so copying the
-    strip in opaquely is pixel-exact."""
-    strip, w, _h = text_strip(s, colour, ground, DATE_SCALE)
+    """The date string as an opaque strip (bytes, width) -
+    smoothfont's "date" strike, with the date's two-value
+    return. The strip's ground is the dial colour under the
+    box (CREAM by day, NIGHT_GROUND by night): the dial
+    under the box is plain ground (the box's farthest
+    corner sits ~194 px from centre, inside the 233 disc,
+    clear of ticks and of his cap), so copying the strip in
+    opaquely is pixel-exact - the anti-aliasing blends ink
+    toward that ground, which is exactly what's there."""
+    strip, w, _h = smoothfont.strip(s, "date", colour,
+                                    ground)
     return strip, w
 
 
 def draw_date(fb, time_tuple, colour=None, ground=None):
-    """The date, centred at DATE_Y: the cached scaled strip
+    """The date, centred at DATE_Y: the cached smooth strip
     copied into the frame buffer row by row (the Canvas.blit
-    slice pattern - 24 slice copies, no window needed). The
-    glyph box (rows 88..111) still lives entirely in the top
-    band; the minute hand crosses it and is drawn after,
-    exactly as at 1x. By night the strip is PALE on
-    NIGHT_GROUND - same box, same slices. (Defaults resolve
-    in the body: INK/CREAM are defined below in the module,
-    and def-time defaults would not see them.)"""
+    slice pattern - DATE_H slice copies, no window needed).
+    The glyph box still lives entirely in the top band; the
+    minute hand crosses it and is drawn after, exactly as
+    before. By night the strip is PALE on NIGHT_GROUND -
+    same box, same slices. (Defaults resolve in the body:
+    INK/CREAM are defined below in the module, and def-time
+    defaults would not see them.)"""
     if colour is None:
         colour = INK
     if ground is None:

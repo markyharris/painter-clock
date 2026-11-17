@@ -26,25 +26,28 @@
 # set_backlight setter here, so main's convention leaves
 # them off this face.
 #
-# TEXT: the glyphs are clockface.text_strip's 8x8 font,
-# scaled - but NOT its cache. That cache is keyed per
-# string forever, which suits a date (one string a day);
+# TEXT (v27): the glyphs are smoothfont's strikes - real
+# Liberation Sans letterforms, anti-aliased (the hero is
+# the "hero" strike, the sub-line the "sub" strike) - where
+# v26 grew the firmware's 8x8 font to scale 11 and Mark
+# asked for smooth. The strips are still NOT
+# smoothfont.strip's cache: that cache is keyed per string
+# for slow-changing text (a date: one string a day), while
 # a digital face mints a new hero string every minute and
 # a new sub-line every second, and an unbounded cache of
-# 77 KB hero strips would eat the PSRAM in a day. This
-# module keeps its own strip builder (the same scratch-
-# FrameBuffer construction) behind a small bounded cache:
-# at most _CACHE_MAX strips, cleared whole when it fills -
-# a rebuild is ~1,500 slice writes, once a minute at most
-# for the hero, and the seconds line is small.
+# ~84 KB hero strips would eat the PSRAM in a day. This
+# module keeps its own small bounded cache over
+# smoothfont.build_strip: at most _CACHE_MAX strips,
+# cleared whole when it fills - a rebuild is ~18,500
+# covered-pixel writes for the hero (once a minute at
+# most) and ~2,300 for the seconds line.
 #
 # Drawing discipline: the static field is C framebuf
 # primitives through band windows; compose is slice copies
-# only (the static copy, the date's 24 rows, the strips'
+# only (the static copy, the date's rows, the strips'
 # rows) - zero framebuf prims, zero per-byte writes.
-import framebuf
-
 import clockface
+import smoothfont
 
 NAME = "digital"
 TICK_SECONDS = True
@@ -63,18 +66,19 @@ NIGHT_GROUND = clockface.NIGHT_GROUND
 NIGHT_SHADE = clockface.NIGHT_SHADE
 NIGHT_RIM = clockface.NIGHT_RIM
 
-# The layout: glyph boxes, centred on CX. The hero at
-# scale 11 is 88 px tall and at most 440 px wide ("12:59")
-# - its corners sit at r ~230, inside the 233 ground disc,
-# and the strip's ground IS the field colour, so the box
-# is invisible against the field. The sub-line at scale 5
-# ("%02d PM", 240x40) rides below it.
-HERO_SCALE = 11
-HERO_Y = 172
-SUB_SCALE = 5
-SUB_Y = 292
-AMPMS_SCALE = 4        # the night sub-line: the marker alone
-AMPM_Y = 300
+# The layout: strike line boxes, centred on CX. The hero
+# strike's line box is 108 px tall and its widest string
+# ("12:59") is 391 px - its ink corners sit at r ~195,
+# inside the 233 ground disc, and the strip's ground IS
+# the field colour, so the box is invisible against the
+# field. The sub-line ("%02d PM", ~139x33) rides below it;
+# at night the sub-line carries the AM/PM marker alone, in
+# the same strike.
+HERO_STRIKE = "hero"
+HERO_Y = 156
+SUB_STRIKE = "sub"
+SUB_Y = 284
+AMPM_Y = 290           # the night sub-line: the marker alone
 
 _show_date = True        # admin "show_date" key; main.py drives
 
@@ -96,47 +100,27 @@ _CACHE_MAX = 8
 _strips = {}
 
 
-def _pat(colour):
-    return bytes((colour & 0xFF, (colour >> 8) & 0xFF))
-
-
-def _strip(s, colour, ground, scale):
+def _strip(s, colour, ground, strike):
     """A string as an opaque strip (bytes, width, height) -
-    clockface.text_strip's construction (8x8 font drawn
-    once into a small scratch FrameBuffer, each set pixel
-    grown to a scale-square by slice writes), behind this
+    smoothfont.build_strip (real letterforms blended onto
+    the ground through their coverage masks), behind this
     module's bounded cache."""
-    key = (s, colour, ground, scale)
+    key = (s, colour, ground, strike)
     hit = _strips.get(key)
     if hit is not None:
         return hit
     if len(_strips) >= _CACHE_MAX:
         _strips.clear()
-    w1 = len(s) * 8
-    sfb = framebuf.FrameBuffer(bytearray(w1 * 16), w1, 8,
-                               framebuf.RGB565)
-    sfb.fill(ground)
-    sfb.text(s, 0, 0, colour)
-    w = w1 * scale
-    h = 8 * scale
-    strip = bytearray(_pat(ground) * (w * h))
-    ink = _pat(colour) * scale
-    for sy in range(8):
-        for sx in range(w1):
-            if sfb.pixel(sx, sy) == colour:
-                for dy in range(scale):
-                    do = ((sy * scale + dy) * w
-                          + sx * scale) * 2
-                    strip[do:do + scale * 2] = ink
-    _strips[key] = (bytes(strip), w, h)
-    return _strips[key]
+    hit = smoothfont.build_strip(s, strike, colour, ground)
+    _strips[key] = hit
+    return hit
 
 
-def _centred(canvas, s, colour, ground, scale, y):
+def _centred(canvas, s, colour, ground, strike, y):
     """Blit one strip centred on CX at rows y..y+h-1: row
     slice copies into the frame buffer, the draw_date
     pattern."""
-    strip, w, h = _strip(s, colour, ground, scale)
+    strip, w, h = _strip(s, colour, ground, strike)
     x = CX - w // 2
     buf = canvas.buf
     row = w * 2
@@ -217,10 +201,10 @@ def compose(canvas, time_tuple, state=None):
     h24 = time_tuple[3]
     ampm = "AM" if h24 < 12 else "PM"
     hero = "%d:%02d" % (h24 % 12 or 12, time_tuple[4])
-    _centred(canvas, hero, ink, ground, HERO_SCALE, HERO_Y)
+    _centred(canvas, hero, ink, ground, HERO_STRIKE, HERO_Y)
     if night:
-        _centred(canvas, ampm, ink, ground, AMPMS_SCALE, AMPM_Y)
+        _centred(canvas, ampm, ink, ground, SUB_STRIKE, AMPM_Y)
     else:
         _centred(canvas, "%02d %s" % (time_tuple[5], ampm),
-                 ink, ground, SUB_SCALE, SUB_Y)
+                 ink, ground, SUB_STRIKE, SUB_Y)
     return canvas

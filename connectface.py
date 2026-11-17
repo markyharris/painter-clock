@@ -12,9 +12,15 @@
 #
 # WHAT: the same painted glass as setupface - the clock's own
 # frosted dial (clockface.draw_dial at the owner's backlight
-# strength), lettering via clockface.text_strip blitted KEYED
-# over the dial (display.blit_sprite), ticks showing through
-# the gaps. The words: "Connected", what the number is FOR
+# strength), lettering in smoothfont's strikes composited
+# over the dial (smoothfont.draw blends each glyph against
+# what's actually under it, so the lettering sits on the
+# glass like the hands and the date do, ticks showing
+# through the gaps). v27 (Mark's ask, minutes after v26
+# bench-verified): the boot screen's lettering went smooth
+# with the faces' - the IP is the one thing he reads off
+# this screen, and it was the blockiest text on the clock.
+# The words: "Connected", what the number is FOR
 # ("Admin page - type this / in a browser"), the admin
 # address itself BIG (admin.py serves on port 80, so the
 # bare IP in a browser is the whole address - no port, no
@@ -22,7 +28,10 @@
 # SSID and the IP are read from the live network state at
 # render time (main passes wlan.ifconfig()[0] and the joined
 # SSID), never hardcoded - the screen cannot drift from the
-# truth it reports.
+# truth it reports. The SSID is arbitrary owner text, which
+# is why the small strike (conn_s) carries FULL printable
+# ASCII; a character beyond even that draws smoothfont's
+# .notdef box, alone - never a fallback to blocks.
 #
 # WHEN: main renders this ONCE per boot, right after the NTP
 # sync (so the clock is already time-true behind the splash),
@@ -37,71 +46,79 @@
 # interrupted. Fail-soft like the setup screen: a splash that
 # cannot be drawn prints and boot continues to the face.
 import clockface
-import display
-
-# The strip ground doubles as the blit key: a magenta the dial
-# never wears, so only glyph pixels land on the glass.
-KEY = clockface.rgb565(255, 0, 255)
+import smoothfont
 
 HEADLINE = "Connected"
 
-# The layout: (text, scale, y) - glyph boxes, centred on CX.
-# Scales are clockface.text_strip scales (glyph box 8*scale
-# px). Every line's ink stays inside the cream disc
-# (desk-verified: no ink pixel beyond r=230 of centre - the
-# disc edge is 233, the tick annulus 203-227, and like the
-# hands the lettering may cross a tick, never the rim). The
-# admin address - the one thing the owner must copy exactly -
-# gets the big scale and its own line: scale 4 while it fits
-# (<= 13 chars, the common 192.168.x.x shapes), scale 3 for
-# the longest dotted quads. The network name is display-only
-# and capped at 26 chars so a long SSID cannot push ink at
-# the rim; the join itself is untouched.
+# The layout: (text, strike, cap_y) - cap_y is where the
+# line's capitals sit, centred on CX. Every line's ink
+# stays inside the cream disc (desk-verified: no ink pixel
+# beyond r=230 of centre - the disc edge is 233, the tick
+# annulus 203-227, and like the hands the lettering may
+# cross a tick, never the rim). The admin address - the
+# one thing the owner must copy exactly - gets the big
+# strike and its own line: conn_l while it fits (<= 13
+# chars, the common 192.168.x.x shapes), conn_m for the
+# longest dotted quads. The network name is display-only:
+# capped at SSID_MAX chars AND at SSID_W pixels of actual
+# rendered width (the smooth font is proportional - a run
+# of wide capitals is what could push ink at the rim, not
+# the character count), so a long SSID cannot escape the
+# disc; the join itself is untouched.
 SSID_MAX = 26
+SSID_W = 400
 
 _LINES = (
-    (HEADLINE, 4, 92),
-    ("Admin page - type this", 2, 148),
-    ("in a browser", 2, 172),
+    (HEADLINE, "conn_l", 92),
+    ("Admin page - type this", "conn_s", 148),
+    ("in a browser", "conn_s", 172),
     ("@IP@", None, 212),              # wlan.ifconfig()[0]
-    ("Your network:", 2, 268),
-    ("@SSID@", 2, 292),               # the joined network
+    ("Your network:", "conn_s", 268),
+    ("@SSID@", "conn_s", 292),        # the joined network
 )
 
 
-def _ip_scale(ip):
-    return 4 if len(ip) <= 13 else 3
+def _ip_strike(ip):
+    return "conn_l" if len(ip) <= 13 else "conn_m"
+
+
+def _ssid_fit(ssid):
+    """The SSID as it will be shown: char-capped, then
+    width-capped by its true rendered width."""
+    if len(ssid) > SSID_MAX:
+        ssid = ssid[:SSID_MAX]
+    while len(ssid) > 1 and smoothfont.text_width(
+            ssid, "conn_s") > SSID_W:
+        ssid = ssid[:-1]
+    return ssid
 
 
 def _lines(ssid, ip):
     """The layout with the two placeholders resolved from the
     live network state the caller read off the WLAN."""
-    if len(ssid) > SSID_MAX:
-        ssid = ssid[:SSID_MAX]
+    ssid = _ssid_fit(ssid)
     out = []
-    for text, scale, y in _LINES:
+    for text, strike, y in _LINES:
         if text == "@IP@":
             text = ip
-            scale = _ip_scale(ip)
+            strike = _ip_strike(ip)
         elif text == "@SSID@":
             text = ssid
-        out.append((text, scale, y))
+        out.append((text, strike, y))
     return out
 
 
 def render(canvas, ssid, ip, backlight=50):
     """Draw the Connected screen into canvas (the frame
     canvas - the caller shows it and holds it). One static
-    frame: the dial, then the lettering keyed over it.
+    frame: the dial, then the lettering composited over it.
     backlight is the config's painted-glow strength, applied
     the way main applies it for the face, so the glass
     matches the clock's own."""
     clockface.set_backlight(backlight)
     clockface.draw_dial(canvas)
     ink = clockface.INK
-    for text, scale, y in _lines(ssid, ip):
-        strip, w, h = clockface.text_strip(text, ink, KEY,
-                                           scale)
-        display.blit_sprite(canvas, strip, w, h,
-                            clockface.CX - w // 2, y, KEY)
+    for text, strike, y in _lines(ssid, ip):
+        smoothfont.draw(canvas, text, clockface.CX, y,
+                        strike, ink)
     return canvas

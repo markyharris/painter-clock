@@ -15,10 +15,15 @@
 # WHAT: the clock's own frosted dial (clockface.draw_dial at
 # the owner's backlight strength - the same static layer the
 # face wears), with the instructions painted on the glass in
-# the project's lettering: clockface.text_strip glyphs blitted
-# KEYED over the dial (display.blit_sprite), so the lettering
-# sits on the glass like the hands and the date do, ticks
-# showing through the gaps. The network name and the fallback
+# the project's lettering: smoothfont strikes composited
+# over the dial (smoothfont.draw blends each glyph against
+# what's actually under it), so the lettering sits on the
+# glass like the hands and the date do, ticks showing
+# through the gaps. (v27: the lettering went smooth with
+# the rest of the clock's text - every string here is
+# fixed, including the network name, which is the clock's
+# OWN access-point name, so the boot screens' strikes
+# cover it whole.) The network name and the fallback
 # address are read from prov's own constants at render time,
 # so the screen can never drift from what the portal actually
 # runs. There is deliberately no figure: three legible steps
@@ -34,35 +39,31 @@
 # sockets; the panel holds a static image for free). Setup
 # completing reboots into the normal face, as before.
 import clockface
-import display
 import prov
-
-# The strip ground doubles as the blit key: a magenta the dial
-# never wears, so only glyph pixels land on the glass.
-KEY = clockface.rgb565(255, 0, 255)
+import smoothfont
 
 HEADLINE = "Wi-Fi setup"
 
-# The layout: (text, scale, y) - glyph boxes, centred on CX.
-# Scales are clockface.text_strip scales (glyph box 8*scale
-# px); the words are kept short enough that every line's ink
-# stays inside the cream disc (desk-verified: no ink pixel
-# beyond r=230 of centre - the disc edge is 233, the tick
-# annulus 203-227, and like the hands the lettering may cross
-# a tick, never the rim). The two values the owner must copy
-# exactly - the network name and the fallback address - get
-# the big scale and their own lines.
+# The layout: (text, strike, cap_y) - cap_y is where the
+# line's capitals sit, centred on CX; the words are kept
+# short enough that every line's ink stays inside the cream
+# disc (desk-verified: no ink pixel beyond r=230 of centre -
+# the disc edge is 233, the tick annulus 203-227, and like
+# the hands the lettering may cross a tick, never the rim).
+# The two values the owner must copy exactly - the network
+# name and the fallback address - get the bigger strikes
+# and their own lines.
 _LINES = (
-    (HEADLINE, 4, 124),
-    ("1. On your phone, join", 2, 176),
-    ("@SSID@", 3, 200),                # prov.AP_SSID
-    ("2. A setup page opens", 2, 240),
-    ("by itself. Pick your", 2, 264),
-    ("network, type password", 2, 288),
-    ("3. This clock restarts", 2, 320),
-    ("and connects itself", 2, 344),
-    ("No page? Browse to", 2, 376),
-    ("@IP@", 3, 398),                  # prov.AP_IP
+    (HEADLINE, "conn_l", 124),
+    ("1. On your phone, join", "conn_s", 176),
+    ("@SSID@", "conn_m", 200),        # prov.AP_SSID
+    ("2. A setup page opens", "conn_s", 240),
+    ("by itself. Pick your", "conn_s", 264),
+    ("network, type password", "conn_s", 288),
+    ("3. This clock restarts", "conn_s", 320),
+    ("and connects itself", "conn_s", 344),
+    ("No page? Browse to", "conn_s", 376),
+    ("@IP@", "conn_m", 398),          # prov.AP_IP
 )
 
 
@@ -71,27 +72,26 @@ def _lines():
     prov's constants - the name the owner must join and the
     fallback address, exactly as the portal runs them."""
     out = []
-    for text, scale, y in _LINES:
+    for text, strike, y in _LINES:
         if text == "@SSID@":
             text = prov.AP_SSID
         elif text == "@IP@":
             text = prov.AP_IP
-        out.append((text, scale, y))
+        out.append((text, strike, y))
     return out
 
 
 def render(canvas, backlight=50):
     """Draw the setup screen into canvas (the frame canvas -
     the caller shows it). One static frame: the dial, then
-    the lettering keyed over it. backlight is the config's
-    painted-glow strength, applied the way main applies it
-    for the face, so the glass matches the clock's own."""
+    the lettering composited over it. backlight is the
+    config's painted-glow strength, applied the way main
+    applies it for the face, so the glass matches the
+    clock's own."""
     clockface.set_backlight(backlight)
     clockface.draw_dial(canvas)
     ink = clockface.INK
-    for text, scale, y in _lines():
-        strip, w, h = clockface.text_strip(text, ink, KEY,
-                                           scale)
-        display.blit_sprite(canvas, strip, w, h,
-                            clockface.CX - w // 2, y, KEY)
+    for text, strike, y in _lines():
+        smoothfont.draw(canvas, text, clockface.CX, y,
+                        strike, ink)
     return canvas

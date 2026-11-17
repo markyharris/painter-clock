@@ -11,3 +11,5 @@ setupface.py
 connectface.py
 classicface.py
 digitalface.py
+smoothfont.py
+fontdata.py
