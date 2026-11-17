@@ -150,10 +150,11 @@ def date_string(time_tuple):
                          _MONTHS[m - 1])
 
 
-_strips = {}         # (string, colour, ground) -> (bytes, width):
-                     # the day strip and the pale night strip are
-                     # separate entries; each is rebuilt only when
-                     # its string changes - once a day
+_strips = {}         # (string, colour, ground, scale) ->
+                     # (bytes, width, height): the day strip and
+                     # the pale night strip are separate entries;
+                     # each is rebuilt only when its string
+                     # changes - once a day for the date
 
 
 def _pat(colour):
@@ -162,18 +163,20 @@ def _pat(colour):
     return bytes((colour & 0xFF, (colour >> 8) & 0xFF))
 
 
-def _date_strip(s, colour, ground):
-    """The date string at DATE_SCALE, as an opaque strip
-    (bytes, width). The 8x8 font is drawn once into a small
-    scratch FrameBuffer (80x8 at most - nowhere near the
-    full-size FrameBuffer the firmware wedges on), then each
-    set pixel grows to a DATE_SCALE square. The strip's
-    ground is the dial colour under the box (CREAM by day,
-    NIGHT_GROUND by night): the dial under the box is plain
-    ground (the box's farthest corner sits ~194 px from
-    centre, inside the 233 disc, clear of ticks and of his
-    cap), so copying the strip in opaquely is pixel-exact."""
-    key = (s, colour, ground)
+def text_strip(s, colour, ground, scale):
+    """A string as an opaque strip (bytes, width, height) at
+    the given scale - the project's one text renderer, shared
+    by the date (DATE_SCALE) and the setup screen (setupface,
+    several scales). The 8x8 font is drawn once into a small
+    scratch FrameBuffer (nowhere near the full-size FrameBuffer
+    the firmware wedges on), then each set pixel grows to a
+    scale-square. The strip's ground is whatever the caller
+    says is under the box: the date passes the dial colour
+    (its box sits in plain ground, so copying the strip in
+    opaquely is pixel-exact); setupface passes a key colour
+    and blits the strip keyed, so its lettering lands ON the
+    dial like paint, ticks and all showing through."""
+    key = (s, colour, ground, scale)
     hit = _strips.get(key)
     if hit is not None:
         return hit
@@ -182,18 +185,32 @@ def _date_strip(s, colour, ground):
                                framebuf.RGB565)
     sfb.fill(ground)
     sfb.text(s, 0, 0, colour)
-    w = w1 * DATE_SCALE
-    strip = bytearray(_pat(ground) * (w * DATE_H))
-    ink = _pat(colour) * DATE_SCALE
+    w = w1 * scale
+    h = 8 * scale
+    strip = bytearray(_pat(ground) * (w * h))
+    ink = _pat(colour) * scale
     for sy in range(8):
         for sx in range(w1):
             if sfb.pixel(sx, sy) == colour:
-                for dy in range(DATE_SCALE):
-                    do = ((sy * DATE_SCALE + dy) * w
-                          + sx * DATE_SCALE) * 2
-                    strip[do:do + DATE_SCALE * 2] = ink
-    _strips[key] = (bytes(strip), w)
+                for dy in range(scale):
+                    do = ((sy * scale + dy) * w
+                          + sx * scale) * 2
+                    strip[do:do + scale * 2] = ink
+    _strips[key] = (bytes(strip), w, h)
     return _strips[key]
+
+
+def _date_strip(s, colour, ground):
+    """The date string at DATE_SCALE, as an opaque strip
+    (bytes, width) - text_strip at the date's scale, with the
+    date's two-value return. The strip's ground is the dial
+    colour under the box (CREAM by day, NIGHT_GROUND by
+    night): the dial under the box is plain ground (the box's
+    farthest corner sits ~194 px from centre, inside the 233
+    disc, clear of ticks and of his cap), so copying the
+    strip in opaquely is pixel-exact."""
+    strip, w, _h = text_strip(s, colour, ground, DATE_SCALE)
+    return strip, w
 
 
 def draw_date(fb, time_tuple, colour=None, ground=None):

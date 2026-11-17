@@ -26,7 +26,7 @@ import time
 GITHUB_REPO = "markyharris/painter-clock"
 UPDATE_FILES = ("main.py", "display.py", "clockface.py", "figure.py",
                 "show.py", "timekeep.py", "prov.py", "updater.py",
-                "admin.py")
+                "admin.py", "setupface.py")
 MANIFEST_URL = ("https://raw.githubusercontent.com/%s/main/"
                 "update_files.txt" % GITHUB_REPO)
 RAW_URL = "https://raw.githubusercontent.com/%s/main/" % GITHUB_REPO

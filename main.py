@@ -13,6 +13,11 @@
 #      the first painted frame already shows local time
 #   4. Wi-Fi join from wifi_cfg.py; no usable creds OR a failed
 #      join drops into the PainterClock-Setup portal (rehoming)
+#      - always via _enter_portal(), which begins the panel
+#      first on the BOOT-hold path (stage 2 not reached yet)
+#      and puts setupface's setup screen on it before the
+#      portal starts (v22: a moved clock used to sit black
+#      for the whole portal session and look dead)
 #   5. NTP sync - the authority; non-fatal if it fails (the RTC
 #      carries the clock, and the loop re-syncs when it can)
 #   6. The face's render_static() into the dial layer ->
@@ -48,6 +53,7 @@ import admin
 import display
 import figure as figmod
 import prov
+import setupface
 import show as showmod
 import timekeep
 import updater
@@ -99,6 +105,39 @@ def join_wifi(ssid, password):
         time.sleep_ms(200)
     print("main: Wi-Fi up:", wlan.ifconfig())
     return wlan
+
+
+def _enter_portal(reason):
+    """Setup mode (v22): put the setup screen on the panel
+    FIRST, then run the portal (which never returns - it
+    reboots on a save).
+
+    The screen is setupface's static frame - the frosted dial
+    with the how-to painted on it - rendered once and left up
+    for the whole portal session. Before v22 nothing in the
+    portal path ever composed a frame, so a moved clock sat
+    black from plug-in to setup-done and looked dead (Mark's
+    field report, Nov 16, 2026).
+
+    The display is begun here when boot has not reached stage
+    2 yet (the BOOT-hold path enters before it): init() is a
+    no-op when the panel is already live, and beginning the
+    panel before the portal's radio also honours the stage-2
+    panel-first rule on every path. Fail soft: a screen that
+    cannot be drawn must never cost the owner the portal."""
+    print("main: %s - setup portal" % reason)
+    try:
+        cfg = admin.load_config()
+        display.init()
+        display.set_backlight(cfg["brightness"])
+        setupface.render(display.canvas(),
+                         cfg.get("backlight", 50))
+        display.show()
+        print("main: setup screen on the panel - join '%s', "
+              "or browse to %s" % (prov.AP_SSID, prov.AP_IP))
+    except Exception as exc:
+        print("main: setup screen failed:", exc)
+    prov.run_portal()  # never returns (reboots on save)
 
 
 def _face_module(name):
@@ -178,8 +217,7 @@ def main():
 
     # 1. Rehoming gesture first - before anything that can hang.
     if prov.boot_button_held():
-        print("main: BOOT held just after power-up - setup portal")
-        prov.run_portal()  # never returns (reboots on save)
+        _enter_portal("BOOT held just after power-up")
 
     cfg = admin.load_config()
     app = {"config": cfg, "time_str": "--:--:--",
@@ -205,12 +243,10 @@ def main():
     # setup portal - that is the rehoming contract.
     ssid, password = prov.load_creds()
     if not prov.creds_usable(ssid):
-        print("main: no saved Wi-Fi credentials - setup portal")
-        prov.run_portal()  # never returns
+        _enter_portal("no saved Wi-Fi credentials")
     wlan = join_wifi(ssid, password)
     if wlan is None:
-        print("main: Wi-Fi join failed - setup portal")
-        prov.run_portal()  # never returns
+        _enter_portal("Wi-Fi join failed")
     app["wifi"] = _wifi_str(wlan, ssid)
 
     # 5. NTP - authority, but non-fatal: the RTC carries us.
