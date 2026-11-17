@@ -57,8 +57,9 @@ TRYIT = (("watch", "Wristwatch check"), ("cap", "Cap-off brow wipe"),
 
 DEFAULT_CONFIG = {
     # Clock face module (SPEC Nov 15 addendum): "painter"
-    # (clockface.py) | "classic" | "digital" - classic/digital
-    # not built yet; unknown names fall back to the painter.
+    # (clockface.py) | "classic" (classicface.py) | "digital"
+    # (digitalface.py) - all three built (v26); unknown names
+    # fall back to the painter.
     "face": "painter",
     "brightness": 255,       # panel backlight, 0..255
     "frost": 55,             # frosted glass, 0..100 (0 = sharp)
@@ -135,11 +136,19 @@ def _valid_hhmm(s):
     return 0 <= h < 24 and 0 <= m < 60
 
 
+# Pulldown labels (v26): the values stay the config's face
+# names; the labels say what the faces are.
+FACE_LABELS = {"painter": "Painter",
+               "classic": "Classic analog",
+               "digital": "Digital"}
+
+
 def _face_options(current):
     out = ""
     for name in FACES:
         sel = " selected" if name == current else ""
-        out += '<option value="%s"%s>%s</option>' % (name, sel, name)
+        out += '<option value="%s"%s>%s</option>' % (
+            name, sel, FACE_LABELS.get(name, name))
     return out
 
 

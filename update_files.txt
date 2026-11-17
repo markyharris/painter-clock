@@ -9,3 +9,5 @@ updater.py
 admin.py
 setupface.py
 connectface.py
+classicface.py
+digitalface.py

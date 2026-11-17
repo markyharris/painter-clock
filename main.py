@@ -24,8 +24,13 @@
 #      page's address, rendered once and held ~35 s (servicing
 #      admin) before the loop - boot joins only, never a
 #      mid-run reconnect
-#   6. The face's render_static() into the dial layer ->
-#      figure.prepare() (body rects over the dial)
+#   6. The face's render_static() into the dial layer (plus
+#      its render_night() into the night layer, if it has
+#      one) -> figure.prepare() (body rects over the dial -
+#      the PAINTER face only; the classic/digital faces have
+#      no figure, and in the loop they repaint on change -
+#      each second awake, each minute asleep - where the
+#      painter's show engine drives the frames below)
 #   7. admin server + the updater's after-boot check (flag only)
 #   8. The run loop: show.Show driven by REAL local time
 #
@@ -66,14 +71,14 @@ import updater
 VERSION = "1.0"
 
 # Face selection (SPEC Nov 15 addendum): the admin "face" key
-# names a module with render_static()/compose(). Only the
-# painter exists so far; classic/digital plug in here later,
-# and unknown names fall back to the painter (bench_first_frame
+# names a module with render_static()/compose(). All three
+# faces are built (the classic and digital landed in v26);
+# unknown names fall back to the painter (bench_first_frame
 # uses the same map).
 FACES = {
     "painter": "clockface",
-    # "classic": "face_classic",
-    # "digital": "face_digital",
+    "classic": "classicface",
+    "digital": "digitalface",
 }
 
 JOIN_TIMEOUT_MS = 15000   # ~15 s, then the portal (rehoming)
@@ -188,7 +193,7 @@ def _hold_splash(splash_from, app):
 def _face_module(name):
     mod_name = FACES.get(name)
     if mod_name is None:
-        print("main: face %r not built yet - using the painter"
+        print("main: unknown face %r - using the painter"
               % (name,))
         mod_name = FACES["painter"]
     return __import__(mod_name)
@@ -215,6 +220,22 @@ def _apply_backlight(face_mod, cfg):
     setter = getattr(face_mod, "set_backlight", None)
     if setter is not None:
         setter(cfg.get("backlight", 50))
+
+
+def _render_night(face_mod):
+    """Render the face's NIGHT static layer into display's
+    night canvas, if the face has one (v26): every face with
+    a sleep treatment exposes render_night(canvas). The
+    painter always had it - figure's sleep path renders it
+    lazily too; rendering it here as well keeps the one
+    shared night canvas wearing the SELECTED face's night
+    after a switch (the canvas is shared, the layers are
+    per-face, and a stale layer from the previous face must
+    never survive into this face's sleep). A face without
+    render_night simply has no night layer."""
+    render = getattr(face_mod, "render_night", None)
+    if render is not None:
+        render(display.night_dial())
 
 
 def _apply_sleep(show, cfg):
@@ -313,10 +334,15 @@ def main():
     _apply_date(face_mod, cfg)
     _apply_backlight(face_mod, cfg)
     face_mod.render_static(display.dial())
+    _render_night(face_mod)
     print("main: dial rendered (face: %s)" % face_name)
-    figmod.prepare(display.dial(), frost_now, backlight_now)
-    print("main: figure prepared (frost %s, backlight %s)"
-          % (frost_now, backlight_now))
+    if face_name == "painter":
+        # the figure's body rects bake over the PAINTER's
+        # dial only (v26): on another face they would stamp
+        # the man onto a dial that has no man in it.
+        figmod.prepare(display.dial(), frost_now, backlight_now)
+        print("main: figure prepared (frost %s, backlight %s)"
+              % (frost_now, backlight_now))
 
     # 7. Admin + after-boot update check (flags only).
     admin.start()
@@ -339,6 +365,11 @@ def main():
     if splash_from is not None:
         _hold_splash(splash_from, app)
     drawn_total = None      # total-minutes of the last drawn frame
+    face_key = None         # (total, second, night) of the last
+                            # frame a NON-painter face drew (v26);
+                            # None forces its next frame
+    night_now = False       # the current frame's sleep state,
+                            # for the non-painter compose below
     last_active_ms = boot_ms
     last_housekeep = boot_ms
     last_sleep_ms = boot_ms  # last frame composed while asleep
@@ -358,22 +389,46 @@ def main():
         # home). During sleep hours the event terms apply, plus
         # the sleep cadence (v15): the sleeping scene breathes
         # and drifts its Z's on a ~1 s frame rhythm.
-        active = (not show.sleeping_at(total)
-                  or show.running or show.idle is not None
-                  or show.cuckoo is not None or show.trycuckoo
-                  or show.tryit is not None
-                  or (show.next_idle_at is not None
-                      and time.ticks_diff(now_ms,
-                                          show.next_idle_at) >= 0)
-                  or total != drawn_total
-                  or time.ticks_diff(now_ms, last_active_ms)
-                  < SETTLE_MS
-                  or (show.sleeping_at(total)
-                      and time.ticks_diff(now_ms, last_sleep_ms)
-                      >= SLEEP_FRAME_MS))
+        if face_name == "painter":
+            active = (not show.sleeping_at(total)
+                      or show.running or show.idle is not None
+                      or show.cuckoo is not None or show.trycuckoo
+                      or show.tryit is not None
+                      or (show.next_idle_at is not None
+                          and time.ticks_diff(now_ms,
+                                              show.next_idle_at) >= 0)
+                      or total != drawn_total
+                      or time.ticks_diff(now_ms, last_active_ms)
+                      < SETTLE_MS
+                      or (show.sleeping_at(total)
+                          and time.ticks_diff(now_ms, last_sleep_ms)
+                          >= SLEEP_FRAME_MS))
+        else:
+            # A non-painter face (v26) has no shows, routines
+            # or cuckoo to service - it repaints only when what
+            # it displays changes: every second while awake
+            # (both new faces carry seconds; TICK_SECONDS is
+            # the face's own say-so), and on the minute in the
+            # sleep window (the night treatment snaps each
+            # minute, nothing animates).
+            night_now = show.sleeping_at(total)
+            tick = loc[5] if (not night_now
+                              and getattr(face_mod, "TICK_SECONDS",
+                                          False)) else 0
+            active = face_key != (total, tick, night_now)
+            if active:
+                face_key = (total, tick, night_now)
         if active:
             try:
-                show.update(canvas, now_ms, loc)
+                if face_name == "painter":
+                    show.update(canvas, now_ms, loc)
+                elif night_now:
+                    face_mod.compose(
+                        canvas, loc,
+                        {"night": True,
+                         "dial": display.night_dial()})
+                else:
+                    face_mod.compose(canvas, loc)
                 display.show()
             except Exception as exc:
                 print("main: frame failed:", exc)
@@ -397,14 +452,21 @@ def main():
         admin.step(app)
         if app.get("tryit") is not None:
             # an admin Try-it press: queue the routine; it runs
-            # at the next gap where it fits before the boundary
-            show.queue_idle(app["tryit"])
+            # at the next gap where it fits before the boundary.
+            # Routines are the painter's (v26): on another face
+            # the press is simply dropped, never queued - a
+            # stale queue must not fire if the owner switches
+            # back to the painter later.
+            if face_name == "painter":
+                show.queue_idle(app["tryit"])
             app["tryit"] = None
         if app.get("trycuckoo"):
             # an admin "Try the cuckoo" press: queue the ritual;
             # it runs at the next gap (sleep defers it, exactly
-            # like a routine try-it)
-            show.queue_cuckoo()
+            # like a routine try-it). Painter-only, like the
+            # routines above.
+            if face_name == "painter":
+                show.queue_cuckoo()
             app["trycuckoo"] = False
         if app["changed"]:
             app["changed"] = False
@@ -421,6 +483,7 @@ def main():
                 date_now = cfg.get("show_date", True)
                 _apply_date(face_mod, cfg)
                 drawn_total = None  # force a repaint
+                face_key = None     # (a non-painter face too)
                 print("main: show_date changed to %s" % date_now)
             if cfg.get("face", "painter") != face_name:
                 face_name = cfg.get("face", "painter")
@@ -430,12 +493,16 @@ def main():
                 _apply_date(face_mod, cfg)
                 _apply_backlight(face_mod, cfg)
                 face_mod.render_static(display.dial())
-                figmod.prepare(display.dial(), frost_now,
-                               backlight_now)
+                _render_night(face_mod)
+                if face_name == "painter":
+                    figmod.prepare(display.dial(), frost_now,
+                                   backlight_now)
                 drawn_total = None  # force a repaint
+                face_key = None
                 print("main: face changed to %s" % face_name)
-            elif cfg.get("frost", 55) != frost_now \
-                    or cfg.get("backlight", 50) != backlight_now:
+            elif face_name == "painter" and \
+                    (cfg.get("frost", 55) != frost_now
+                     or cfg.get("backlight", 50) != backlight_now):
                 # frost and/or backlight: the rects are re-baked
                 # with the new strengths (prepare is keyed on
                 # both). A backlight change ALSO re-renders the
