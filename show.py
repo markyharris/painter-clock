@@ -70,10 +70,12 @@ IDLE_DUR = {  # ms
     "watch": 2500, "cap": 3000, "sip": 3400, "scratch": 2000,
     "rear": 2000, "apple": 4000, "hanky": 3000, "phone": 5000,
     "plane": 5000, "shoulder": 2100,
+    "bucket": 6000, "crossed": 4200,   # v25 (see the routines)
 }
 IDLE_WEIGHTS = (("shoulder", 4), ("watch", 3), ("scratch", 3),
                 ("sip", 2), ("cap", 2), ("hanky", 2), ("rear", 2),
-                ("apple", 2), ("phone", 1), ("plane", 1))
+                ("apple", 2), ("bucket", 2), ("crossed", 2),
+                ("phone", 1), ("plane", 1))
 IDLE_FIRST_MIN = 45000    # first routine 45-90 s after boot...
 IDLE_FIRST_RAND = 45000
 IDLE_EVERY_MIN = 35000    # ...then one every ~35-75 s (v13:
@@ -112,6 +114,17 @@ CUCKOO_FOG_MS = 8800      # fog ends; the rest is the retreat
 CUCKOO_HAND_R = 62        # the cloth hand's circle radius -
                           # just outside the porthole's 56, so
                           # the cloth rides the rim it opens
+CUCKOO_SHIFT = 80         # v25: the step-aside, px - before the
+                          # lean he steps to the side OPPOSITE
+                          # the hour hand, so his face and the
+                          # porthole (r 56 about the head) sit
+                          # fully clear of the dial centre and
+                          # the vertical minute hand: at 80 the
+                          # disc's near edge is 240+-80-56 =
+                          # 24 px from the centre line. Near-
+                          # vertical hour hands (12 and 6) have
+                          # no side: the default step is RIGHT
+                          # (+80) - see _start_cuckoo
 
 # The weight rock (Nov 15, 2026, v10 - Mark: "at minimum, he
 # needs to rock from one leg to the other as if impatiently
@@ -217,6 +230,7 @@ _IDLE_NEUTRAL = {
     "mug_home": True, "apple_bites": 0, "hanky_puff": 0.0,
     "bend": 0.0, "follow": 0.0, "tau_ms": 200, "head_tilt": 0.0,
     "lean_in": 0.0, "sway_x": 0.0, "cuckoo_clear": 0.0,
+    "bend_dir": None, "bucket_carried": False, "tap_lift": 0,
 }
 
 
@@ -316,19 +330,35 @@ def _idle_sip(sh, p):
     # dip machinery), comes up with it, sips, and dips it back.
     fig = sh.fig
     _, head, hang_l, hang_r = sh._anchors()
-    mx, my = figmod.MUG_HOME
+    # the mug's home follows the bucket's side (v25): after a
+    # bucket move the grab is at the mirrored floor spot, and
+    # the dip that fetches it leans that way (figure.pose
+    # derives the lean from the bucket's side)
+    mx, my = figmod.mug_home(fig.bucket_x)
     grab = (mx, my - 8)
-    mouth = (head[0] - 2, head[1] + 13)
+    # v25: with the bucket on his left the whole sip mirrors -
+    # the LEFT hand does the dipping and sipping. The working
+    # hand must be the one on the lean's side: leaning left,
+    # the right shoulder rides ~23 px higher than it does
+    # leaning right (a rigid torso rotating about the hips),
+    # and a right-handed grab at the left floor lands ~18 px
+    # short of the mug (test_reach's mirrored proofs). The
+    # left hand lands it exactly, like the right hand does
+    # at the right floor.
+    left = fig.bucket_x < clockface.CX
+    hang = hang_l if left else hang_r
+    mouth = (head[0] + 2, head[1] + 13) if left \
+        else (head[0] - 2, head[1] + 13)
     bend = _path1(p, [(0.0, 0.0), (0.08, 0.0), (0.22, 1.0),
                       (0.30, 1.0), (0.48, 0.0), (0.70, 0.0),
                       (0.80, 1.0), (0.86, 1.0), (1.0, 0.0)])
-    tip_r = _path(p, [(0.0, hang_r), (0.22, grab), (0.32, grab),
-                      (0.55, mouth), (0.68, mouth),
-                      (0.84, grab), (0.90, grab), (1.0, hang_r)])
+    tip = _path(p, [(0.0, hang), (0.22, grab), (0.32, grab),
+                    (0.55, mouth), (0.68, mouth),
+                    (0.84, grab), (0.90, grab), (1.0, hang)])
     if 0.55 <= p <= 0.68:
         # a small contented bob while the mug is at his mouth
-        tip_r = (tip_r[0], tip_r[1]
-                 + math.sin((p - 0.55) / 0.13 * math.pi) * 2)
+        tip = (tip[0], tip[1]
+               + math.sin((p - 0.55) / 0.13 * math.pi) * 2)
     held = 0.26 <= p < 0.84
     # v10: follow is 0.30 throughout (was 0.55 around the grabs).
     # Bent at the waist, his shoulder lands ~95 px right of his
@@ -336,9 +366,14 @@ def _idle_sip(sh, p):
     # PAST it and out of arm's reach of the floor. The moderate
     # follow lets the body SINK instead (the sink row does the
     # reaching) - the grab is verified in test_reach.
-    fig.set_intent(tip_r=tip_r, bend=bend, follow=0.30,
-                   prop_r="mug" if held else None,
-                   mug_home=not held)
+    if left:
+        fig.set_intent(tip_l=tip, bend=bend, follow=0.30,
+                       prop_l="mug" if held else None,
+                       mug_home=not held)
+    else:
+        fig.set_intent(tip_r=tip, bend=bend, follow=0.30,
+                       prop_r="mug" if held else None,
+                       mug_home=not held)
 
 
 def _idle_scratch(sh, p):
@@ -471,11 +506,89 @@ def _idle_shoulder(sh, p):
         follow=0.08)
 
 
+def _idle_bucket(sh, p):
+    # He bends, picks up the paint bucket, carries it to the
+    # other side of the floor, and sets it down - and it
+    # STAYS there (v25, the routine deferred Nov 15): the
+    # set-down flips fig.bucket_x, so the show's dip target
+    # and the mug's home follow the bucket until a later
+    # bucket move carries it back. The grabs at both ends are
+    # the proven dip (bend envelope, follow 0.30, the hand to
+    # the rim - the mirrored grab is test_reach's dipL); the
+    # carry between them walks on sway_x with a light follow,
+    # because a dip's follow on a low hand target would drag
+    # the upright body into a crouch (figure.update clamps
+    # the sink, it does not ask why).
+    fig = sh.fig
+    _, head, hang_l, hang_r = sh._anchors()
+    # the move's endpoints are captured ONCE, at the routine's
+    # first frame: derived fresh each frame they would flip
+    # back at the set-down (home/far swap the moment
+    # bucket_x changes) and the bucket would never stay moved
+    if p < 0.05 or getattr(sh, "_bucket_move", None) is None:
+        home0 = fig.bucket_x
+        far0 = (figmod.BUCKET_L[0] if home0 >= clockface.CX
+                else figmod.BUCKET[0])
+        sh._bucket_move = (home0, far0)
+    home, far = sh._bucket_move
+    by = figmod.BUCKET[1]
+    grab_h = (home, by - 14)     # hand on the rim, as the dip
+    grab_f = (far, by - 14)
+    carry_h = (home, by - 64)    # lifted clear of the floor
+    carry_f = (far, by - 64)
+    walk = (far - clockface.CX) * 0.8   # the body's step across
+    bend = _path1(p, [(0.0, 0.0), (0.06, 0.0), (0.20, 1.0),
+                      (0.28, 1.0), (0.42, 0.0), (0.58, 0.0),
+                      (0.70, 1.0), (0.78, 1.0), (1.0, 0.0)])
+    tip_r = _path(p, [(0.0, hang_r), (0.20, grab_h),
+                      (0.30, grab_h), (0.44, carry_h),
+                      (0.58, carry_f), (0.70, grab_f),
+                      (0.80, grab_f), (1.0, hang_r)])
+    follow = _path1(p, [(0.0, 0.30), (0.30, 0.30), (0.44, 0.06),
+                        (0.58, 0.06), (0.70, 0.30), (1.0, 0.30)])
+    # the walk: out while he carries, gone by the set-down -
+    # the far dip is proven from the home stance, so the body
+    # must be back there when the bend takes over
+    sway = _path1(p, [(0.0, 0.0), (0.30, 0.0), (0.46, walk),
+                      (0.56, walk), (0.70, 0.0), (1.0, 0.0)])
+    if p >= 0.80 and fig.bucket_x != far:
+        fig.bucket_x = far       # set down: it stays there
+    bdir = 1 if (home if p < 0.55 else far) >= clockface.CX \
+        else -1
+    fig.set_intent(tip_r=tip_r, bend=bend, bend_dir=bdir,
+                   follow=follow, sway_x=sway,
+                   bucket_carried=0.30 <= p < 0.80)
+
+
+def _idle_crossed(sh, p):
+    # Arms folded across his chest, one foot tapping (v25):
+    # the hands tuck to opposite sides of his chest - the
+    # right hand to his left chest, the left hand under it -
+    # and hold there while the right boot taps in steps
+    # (figure.draw redraws the tapped boot over the baked
+    # one). The baked head cannot turn, so no head motion -
+    # the impatience is all in the foot.
+    fig = sh.fig
+    (fx, fy), head, hang_l, hang_r = sh._anchors()
+    sh_y = fy - figmod.SHOULDER_H
+    tuck_r = (fx - 15, sh_y + 40)
+    tuck_l = (fx + 15, sh_y + 52)
+    e = _env(p, 0.0, 0.18, 0.82, 1.0)
+    lift = 0
+    if 0.22 <= p < 0.80:
+        q = (p - 0.22) / 0.58
+        lift = 3 if (q * 9) % 1.0 < 0.45 else 0
+    fig.set_intent(tip_r=_lerp2(hang_r, tuck_r, e),
+                   tip_l=_lerp2(hang_l, tuck_l, e),
+                   follow=0.06, tap_lift=lift)
+
+
 _IDLE_FN = {"watch": _idle_watch, "cap": _idle_cap,
             "sip": _idle_sip, "scratch": _idle_scratch,
             "rear": _idle_rear, "apple": _idle_apple,
             "hanky": _idle_hanky, "phone": _idle_phone,
-            "plane": _idle_plane, "shoulder": _idle_shoulder}
+            "plane": _idle_plane, "shoulder": _idle_shoulder,
+            "bucket": _idle_bucket, "crossed": _idle_crossed}
 
 
 class Show:
@@ -584,7 +697,9 @@ class Show:
                             prop_r=None, cap_off=False, behind=None,
                             core=None, watch_min=None, mug_home=True,
                             apple_bites=0, hanky_puff=0.0, sway_x=0.0,
-                            lean_in=0.0, cuckoo_clear=0.0)
+                            lean_in=0.0, cuckoo_clear=0.0,
+                            bend_dir=None, bucket_carried=False,
+                            tap_lift=0)
 
     # --- idle configuration (main.py / admin) ---
 
@@ -952,7 +1067,19 @@ class Show:
             <= (60 - self._sec) * 1000
 
     def _start_cuckoo(self, now_ms):
-        self.cuckoo = {"start": now_ms}
+        # v25: the step-aside is chosen HERE, from the hour
+        # hand of the hour that just struck: he moves to the
+        # side OPPOSITE the hand (hand in the left half -> he
+        # steps right, and vice versa), so at 12 the vertical
+        # minute hand no longer stands between the viewer and
+        # his face (Mark, Nov 17). The hand's side is the sign
+        # of sin(hour angle); |sin| <= 0.25 (12 and 6, near-
+        # vertical) has no meaningful side - the default step
+        # is RIGHT.
+        s = math.sin(math.radians(
+            clockface.hour_angle_stepped(self._total)))
+        shift = -CUCKOO_SHIFT if s > 0.25 else CUCKOO_SHIFT
+        self.cuckoo = {"start": now_ms, "shift": shift}
         self._cuckoo_due = None
         # a pending try-it is satisfied by this firing, however
         # it was triggered - never two rituals back to back
@@ -1011,6 +1138,21 @@ class Show:
             return
         _, head, hang_l, _ = self._anchors()
         hx, hy = head
+        # the step-aside (v25): the body sways to the shifted
+        # stance over the lean, holds it through the fog, and
+        # returns during the retreat. Every phase target below
+        # reads _anchors() from the eased body, and the
+        # porthole patch follows pose["head"] - so the lean,
+        # wipe, arm-down, hold and fog all happen AT the
+        # shifted position with no phase changes.
+        shift = self.cuckoo.get("shift", 0)
+        if e < CUCKOO_LEAN_MS:
+            sway = shift * ease(e / CUCKOO_LEAN_MS)
+        elif e < CUCKOO_FOG_MS:
+            sway = float(shift)
+        else:
+            sway = shift * (1.0 - ease(
+                (e - CUCKOO_FOG_MS) / (CUCKOO_DUR - CUCKOO_FOG_MS)))
         if e < CUCKOO_LEAN_MS:
             lean = ease(e / CUCKOO_LEAN_MS)
             clear = 0.0
@@ -1074,7 +1216,7 @@ class Show:
         fig.set_intent(**_IDLE_NEUTRAL)
         fig.set_intent(tip=tip, tool=tool, follow=0.15,
                        tau_ms=200, lean_in=lean,
-                       cuckoo_clear=clear)
+                       cuckoo_clear=clear, sway_x=sway)
 
     # --- idle routines: the scheduler ---
 

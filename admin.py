@@ -51,7 +51,9 @@ TRYIT = (("watch", "Wristwatch check"), ("cap", "Cap-off brow wipe"),
          ("sip", "Mug sip"), ("scratch", "Head scratch"),
          ("rear", "Rear scratch"), ("apple", "Apple snack"),
          ("hanky", "Hanky nose-blow"), ("phone", "Phone call"),
-         ("plane", "Plane flyby"), ("shoulder", "Shoulder roll"))
+         ("plane", "Plane flyby"), ("shoulder", "Shoulder roll"),
+         ("bucket", "Move the paint bucket"),
+         ("crossed", "Arms crossed"))
 
 DEFAULT_CONFIG = {
     # Clock face module (SPEC Nov 15 addendum): "painter"

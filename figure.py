@@ -88,19 +88,39 @@ import display
 
 # --- rig constants (480-scale, px) ---
 HOME_FEET = (240, 446)
-SHOULDER_H = 221                 # shoulder height above feet
-HEAD_H = 266                     # head centre height above feet
+SHOULDER_H = 224                 # shoulder height above feet
+                                 # (v25: was 221 in v13/v14)
+HEAD_H = 274                     # head centre height above feet
+                                 # (v25: was 266)
+HEAD_RX = 19                     # head ellipse radii (v25: was
+HEAD_RY = 25                     # 20 x 23 - Mark asked for an
+                                 # oval, taller than wide: 25/19)
+COLLAR = 6                       # the drawn torso's top edge sits
+                                 # this far ABOVE the shoulder
+                                 # anchor line (v25: a crew collar -
+                                 # half of how the visible neck
+                                 # shortens; the anchors stay on
+                                 # SHOULDER_H, the shirt rises to
+                                 # meet the head)
 HOME_SHOULDER = (244, HOME_FEET[1] - SHOULDER_H)
 BUCKET = (332, 436)
+BUCKET_L = (480 - BUCKET[0], BUCKET[1])   # the bucket's far-side
+                                 # home (v25, the bucket-move
+                                 # routine): mirrored about the
+                                 # dial centre, same floor line
 SHOULDER_CLAMP_X = 106           # shoulder may stray this far from home x
-HIP_H = 116                      # hip pivot height above feet (the
+HIP_H = 130                      # hip pivot height above feet (the
                                  # bend). v13: was 90 - the hips
                                  # rise (y 356 -> 330), the legs
                                  # lengthen and the torso shortens
                                  # inside the v10 height (see the
                                  # proportions note below)
-ARM_L1 = 64                      # upper arm
-ARM_L2 = 82                      # forearm + hand - total reach 146
+                                 # v25: 116 -> 130 (hips y 330 ->
+                                 # 316) - the torso/legs rebalance
+                                 # inside the taller figure (see
+                                 # the v25 note below)
+ARM_L1 = 62                      # upper arm
+ARM_L2 = 80                      # forearm + hand - total reach 142
                                  # v14: re-split from v13's 74/72
                                  # at Mark's note - on a human the
                                  # rig's second bone ends at the
@@ -112,7 +132,13 @@ ARM_L2 = 82                      # forearm + hand - total reach 146
                                  # humerus). 82/64 = +28%. Total
                                  # reach and the clamp are v13's,
                                  # unchanged - only the elbow moves.
-REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 144
+                                 # v25: 64/82 -> 62/80 (reach 146 ->
+                                 # 142, the ratio kept to integer
+                                 # rounding: 80/62 = 1.290 vs 1.281).
+                                 # The cut is small because the
+                                 # reach proof is the wall - see
+                                 # the v25 note below.
+REACH_MAX = ARM_L1 + ARM_L2 - 2  # clamp targets to 140
 ARM_FLOOR_D = 30                 # update() keeps the drawn
                                  # anchor at least this far from
                                  # the working target: ARM_MIN_D
@@ -139,7 +165,7 @@ BEND_RAD = 0.66                  # waist fold at bend == 1 (~38 deg;
 BODY_RISE = 39                   # the drawn body may rise this far
                                  # toward high work (feet leave the
                                  # floor line upward)...
-BODY_SINK = 26                   # ...and sink this far toward low
+BODY_SINK = 33                   # ...and sink this far toward low
                                  # work (see update()'s clamp).
                                  # v13: was 20 in v10 (6 in v9).
                                  # The sink is the low frontier's
@@ -148,6 +174,14 @@ BODY_SINK = 26                   # ...and sink this far toward low
                                  # is closed by the body crouching
                                  # the last 6 px, not by arm length
                                  # (see the proportions note).
+                                 # v25: 26 -> 33 - the compensation
+                                 # that lets the arms shorten AND
+                                 # the shoulders rise while the
+                                 # bottom-arc proof holds (see the
+                                 # v25 note). At full sink his boot
+                                 # soles sit at the dial's bottom
+                                 # edge, transiently, exactly as
+                                 # v13's crossed into the shade.
 
 # TALLER FIGURE (Nov 15, 2026, v10 - Mark: "make him taller. The
 # center of the clock arms should be on his chest, not his face."):
@@ -197,6 +231,50 @@ BODY_SINK = 26                   # ...and sink this far toward low
 # not from bone. BEND_RAD stays 0.66: at the shorter torso's
 # 150 px hip-to-head lever the dip re-proves at 0.0 with the
 # head landing where v10's dip put it.
+#
+# PROPORTIONS PASS 2 (Nov 17, 2026, v25 - Mark, on the v14
+# glass: shorter arms at the same ratio, straighter hang,
+# shorter neck, an oval head, ~5% taller, torso shorter /
+# legs longer by the same amount): feet and bucket unmoved.
+# HEAD_H 266 -> 274 (face centre y 180 -> 172), SHOULDER_H
+# 221 -> 224 (shoulders y 225 -> 222), HIP_H 116 -> 130
+# (hips y 330 -> 316: torso 105 -> 94 px, legs 116 -> 130 -
+# the rebalance measured against the pre-pass figure, so
+# the taller total is the growth, not the rebalance). Head
+# art: the ellipse goes 20x23 -> 19x25 (oval, ~32% taller
+# than wide), the cap rides the new top (-24 for -22). The
+# visible neck shortens 22 -> 19 px: the head-to-shoulder
+# gap grows with the height (45 -> 50), and the difference
+# is more than eaten by the taller ellipse (+2 at the
+# bottom) and the collar (the torso's drawn top edge rises
+# COLLAR=6 above the anchor line). Height 291 -> 301 px
+# (+3.4%): the full 5% is NOT reachable in this package -
+# height, neck and arm length all draw on the same reach
+# budget (below), and 301 is where they balance.
+#
+# The reach wall, again (probe_v25.py swept the candidates
+# through test_reach's own method): the v14 package sat
+# ~1 px from the wall (sink 26, reach 146, worst 9.2). A
+# 10-12% arm cut (reach ~130) measures a ~19-22 px
+# bottom-arc shortfall at EVERY sink the dial allows - the
+# brush would visibly miss the minute tip. The package
+# shipped is the largest arm cut that keeps the proof:
+# 62/80 (reach 142) with BODY_SINK 26 -> 33 as the
+# compensation (the body crouches the difference, the
+# established v13 mechanism - the boots' soles reach the
+# dial's bottom edge at the deepest crouch, transiently).
+# Result: minute worst 9.3 px (bottom arc, full reveal -
+# v14's 9.2), 0.0 at reveals 0.9/0.5, hour 0.0 everywhere,
+# both floor grabs 0.0. The mirrored (bucket-left) proofs:
+# the dip lands 6.8 px (inside the dip's 12 px tolerance -
+# the snap grids are not perfectly symmetric about his
+# centre), and the sip - which changes hands with the side,
+# see show._idle_sip - lands 0.0.
+# The hang: HANG_OUT 8 -> 6 (hands closer to his sides,
+# fx +-25) and HANG_DY stays 135 - on the longer leg that
+# lands the hands at mid-thigh (y ~357) at 95% extension,
+# so the rest elbow's bow drops ~27 -> ~22 px: straighter,
+# as asked, with the soft bow kept.
 
 # arm anchors and rest targets, relative to the DRAWN body: the
 # anchors sit just inside the torso's top corners (the sprite's
@@ -209,14 +287,22 @@ BODY_SINK = 26                   # ...and sink this far toward low
 # and both skin forearms speared out of the belly in an X - the
 # scarecrow in Mark's bench photo, Nov 15.)
 SHOULDER_DX = 19                 # anchor |x| from the body centre
-HANG_OUT = 8                     # hand target this far outboard
-                                 # of its shoulder anchor...
+HANG_OUT = 6                     # hand target this far outboard
+                                 # of its shoulder anchor (v25:
+                                 # was 8 - the hands hug his sides
+                                 # a touch closer, fx +-25)...
 HANG_DY = 135                    # ...and this far below it (v13:
                                  # was 152 in v10 - with the hips
                                  # raised to y 330 this puts the
                                  # hanging hands at MID-THIGH,
                                  # ~94% of the shorter arm's
-                                 # reach, a soft elbow)
+                                 # reach, a soft elbow. v25: the
+                                 # number is v13's, the landing is
+                                 # new - hips at y 316 and the
+                                 # shoulders at 222 put the hands
+                                 # at y ~357, mid-thigh on the
+                                 # longer leg, at ~95% extension:
+                                 # a straighter hang, smaller bow)
 
 # colours (RGB565 via clockface.rgb565)
 OVERALLS = clockface.rgb565(51, 80, 126)
@@ -253,6 +339,19 @@ MUG_HOME = (292, 443)   # the enamel mug lives on the floor by
                         # the bucket (bucket spans x 315..349);
                         # drawn there per frame until the sip
                         # routine's hand takes it (see draw())
+MUG_HOME_L = (480 - MUG_HOME[0], MUG_HOME[1])   # ...and by the
+                        # bucket's far side (v25): the mug's
+                        # home follows the bucket (see
+                        # mug_home() below)
+
+
+def mug_home(bucket_x):
+    """The mug's floor spot for the bucket's current side:
+    it lives by the bucket, so when a bucket move leaves the
+    bucket on the left, the mug's home is the mirrored spot
+    and the sip routine reaches THERE. Derived from the
+    bucket position itself - no second state to drift."""
+    return MUG_HOME if bucket_x >= clockface.CX else MUG_HOME_L
 
 # --- the sleep scene (Nov 15, 2026, v15) ---
 # In the admin sleep hours he lies down along the bottom of
@@ -437,9 +536,16 @@ def _backlight_state(backlight):
 # interact). Rects that do reach the bucket - the dip, the
 # rightmost standing columns - keep the union compositing.
 STAND_XS = (-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90)
-STAND_YS = (-39, -26, -13, 0, 13, 26)
+STAND_YS = (-39, -26, -13, 0, 13, 33)
 DIP_XS = (0, 13, 26)
-DIP_YS = (-11, 5, 18, 26)
+DIP_XS_L = (-26, -13, 0)         # the dip grid mirrored (v25):
+                                 # the bucket-move routine can
+                                 # leave the bucket on his left,
+                                 # and the dip then leans -x on
+                                 # its own pre-baked rects (the
+                                 # "dipL" sprite) - no prepare()
+                                 # rebuild mid-routine
+DIP_YS = (-11, 5, 18, 33)
 # v10: STAND_YS gains the +13 row and DIP_YS the +18 row - the
 # drawn body may now SINK toward low work (BODY_SINK in update())
 # as well as rise toward high work, and the grids must cover the
@@ -455,7 +561,14 @@ DIP_YS = (-11, 5, 18, 26)
 # the stand goes to 78 rects, the dip to 12, and the dip's
 # floor grabs (bucket, mug) re-prove at 0.0 with the body
 # allowed all the way down (see the proportions note above).
-_GRIDS = {"stand": (STAND_XS, STAND_YS), "dip": (DIP_XS, DIP_YS)}
+# v25: the +26 rows become +33 (the deeper v25 sink - same
+# rect count, the snap stays exact at full sink), and the
+# dipL grid joins: 78 stand + 12 dip + 12 dipL rects. The
+# bucket is no longer baked into ANY rect (see draw()): it
+# is stamped per frame at its current side, so the dipL
+# rects cost no more than the dip's.
+_GRIDS = {"stand": (STAND_XS, STAND_YS), "dip": (DIP_XS, DIP_YS),
+          "dipL": (DIP_XS_L, DIP_YS)}
 
 
 def _snap(v, grid):
@@ -720,9 +833,12 @@ def _draw_torso(views, fig, feet, bend, pal, sil=False):
     _fill_rect_v(views, int(fx) - 20, int(fy) - HIP_H, 40, 14,
                  pal[_P_OV])
     # torso: shirt everywhere, overalls over the lower part, with
-    # the bib line at 30% and two straps up to the shoulders
-    tl = bp(fx - 24, fy - SHOULDER_H)
-    tr = bp(fx + 24, fy - SHOULDER_H)
+    # the bib line at 30% and two straps up to the shoulders.
+    # The top edge rides COLLAR above the shoulder line (v25 -
+    # the shirt's crew collar; the arm anchors stay on the
+    # shoulder line itself, in pose())
+    tl = bp(fx - 24, fy - SHOULDER_H - COLLAR)
+    tr = bp(fx + 24, fy - SHOULDER_H - COLLAR)
     bl = bp(fx - 20, fy - HIP_H)
     br = bp(fx + 20, fy - HIP_H)
     _poly_v(views, _quad(tl[0], tl[1], tr[0], tr[1],
@@ -774,11 +890,14 @@ def _draw_head(views, fig, feet, bend, pal, sil=False):
     # head and cap (baked into the rects - v1 has no separate
     # head tracking). The cap sits HIGH (Mark, Nov 15): the band
     # ends 8 px above the head centre and the brim 5, so a real
-    # forehead shows under it.
+    # forehead shows under it. v25: the head is an OVAL
+    # (HEAD_RX x HEAD_RY, taller than wide) and the cap's top
+    # rides the ellipse's top (HEAD_RY - 1 above the centre,
+    # as the old -22 rode the old 23).
     hx, hy = bp(fx, fy - HEAD_H)
-    _ellipse_v(views, hx, hy, 20, 23, pal[_P_SKIN])
-    c0 = bp(fx - 19, fy - HEAD_H - 22)
-    c1 = bp(fx + 19, fy - HEAD_H - 22)
+    _ellipse_v(views, hx, hy, HEAD_RX, HEAD_RY, pal[_P_SKIN])
+    c0 = bp(fx - 19, fy - HEAD_H - (HEAD_RY - 1))
+    c1 = bp(fx + 19, fy - HEAD_H - (HEAD_RY - 1))
     c2 = bp(fx + 19, fy - HEAD_H - 8)
     c3 = bp(fx - 19, fy - HEAD_H - 8)
     _poly_v(views, _quad(c0[0], c0[1], c1[0], c1[1],
@@ -819,19 +938,25 @@ def _draw_head_sharp(views, hx, hy, s):
     op-count guard prices - stays literally untouched. The
     geometry mirrors _draw_head at bend 0, where the head
     centre sits HEAD_H above the feet: the neck runs from
-    +10 to +53 (the shoulder line) in head-centre coords."""
+    +10 to the shoulder line + 8 in head-centre coords."""
     pal = _RAW_PALETTE
 
     def pt(dx, dy):
         return (hx + dx * s, hy + dy * s)
 
-    n = (pt(-6, 10), pt(6, 10), pt(7, 53), pt(-7, 53))
+    # the neck runs from +10 to the shoulder line + 8: in
+    # head-centre coords the shoulder line sits at
+    # HEAD_H - SHOULDER_H (v25: 50, so the bottom is +58 -
+    # it was +53 at the old 45 gap)
+    nb = HEAD_H - SHOULDER_H + 8
+    n = (pt(-6, 10), pt(6, 10), pt(7, nb), pt(-7, nb))
     _poly_v(views, _quad(n[0][0], n[0][1], n[1][0], n[1][1],
                          n[2][0], n[2][1], n[3][0], n[3][1]),
             pal[_P_SKIN])
-    _ellipse_v(views, hx, hy, int(round(20 * s)),
-               int(round(23 * s)), pal[_P_SKIN])
-    c = (pt(-19, -22), pt(19, -22), pt(19, -8), pt(-19, -8))
+    _ellipse_v(views, hx, hy, int(round(HEAD_RX * s)),
+               int(round(HEAD_RY * s)), pal[_P_SKIN])
+    c = (pt(-19, -(HEAD_RY - 1)), pt(19, -(HEAD_RY - 1)),
+         pt(19, -8), pt(-19, -8))
     _poly_v(views, _quad(c[0][0], c[0][1], c[1][0], c[1][1],
                          c[2][0], c[2][1], c[3][0], c[3][1]),
             pal[_P_CAP])
@@ -929,27 +1054,25 @@ def _rect_views(dial, rx, ry, w, h):
     return views, bands
 
 
-def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
-                with_bucket=True):
+def _build_rect(dial, fig, bend, ox, oy, body_box):
     """One opaque rect for one grid point: the body shifted by
-    (ox, oy), composited as dial -> halo -> [bucket ->] body
-    with C primitives only. with_bucket=True (the union path)
-    covers the union region of the shifted body and the bucket
-    at home; with_bucket=False (the bucket split - the shifted
-    body box does not reach the bucket box) makes a body-only
-    rect, and draw() stamps the shared bucket rect separately.
+    (ox, oy), composited as dial -> halo -> body with C
+    primitives only. The rect is BODY-ONLY (v25): the bucket
+    is never baked in - draw() stamps one of the two shared
+    bucket rects (one per floor side) over the body rect
+    every frame, which is what lets the bucket-move routine
+    leave the bucket on either side without a prepare()
+    rebuild. The stamp is safe over the body rect because
+    the body SHAPES never reach the bucket's pixels (the
+    fact the old bucket split already relied on); the bake
+    order it reproduces is the old one - halo first, bucket
+    over it, and the arms (drawn after the stamp) over the
+    bucket, so the brush still dips INTO it.
     Returns {band_index: (source_fb, blit_x, blit_y)}."""
     bx0, by0, bx1, by1 = body_box
-    if with_bucket:
-        kx0, ky0, kx1, ky1 = bucket_box
-        rx = min(bx0 + ox, kx0)
-        ry = min(by0 + oy, ky0)
-        w = max(bx1 + ox, kx1) - rx + 1
-        h = max(by1 + oy, ky1) - ry + 1
-    else:
-        rx, ry = bx0 + ox, by0 + oy
-        w = bx1 - bx0 + 1
-        h = by1 - by0 + 1
+    rx, ry = bx0 + ox, by0 + oy
+    w = bx1 - bx0 + 1
+    h = by1 - by0 + 1
     views, bands = _rect_views(dial, rx, ry, w, h)
     # the frost halo: the silhouette drawn at the four CARDINAL
     # offsets in the flat halo colour, so the veiled figure
@@ -965,8 +1088,6 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
     if _halo_r:
         r = _halo_r
         for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
-            if with_bucket:
-                _draw_bucket(views, _halo_pal, dx, dy, True)
             _draw_body(views, fig,
                        (HOME_FEET[0] + ox + dx,
                         HOME_FEET[1] + oy + dy), bend,
@@ -976,27 +1097,30 @@ def _build_rect(dial, fig, bend, ox, oy, body_box, bucket_box,
     # rim silhouette pass here doubled the bake's prim count
     # and hung the board. The true rim pass survives only in
     # _draw_arm, per frame.)
-    # bucket at its home place, then the body at the grid point
-    if with_bucket:
-        _draw_bucket(views, _pal)
+    # the body at the grid point (v25: no bucket here - it is
+    # stamped per frame at its current side, see draw())
     _draw_body(views, fig, (HOME_FEET[0] + ox, HOME_FEET[1] + oy),
                bend, _pal)
     return bands
 
 
-def _build_bucket_rect(dial, bucket_box):
-    """The shared bucket-only rect for the bucket split: dial ->
-    halo -> bucket over the bucket box, composited once per
-    prepare() and stamped by draw() under every split body rect
-    (their boxes never reach it - see the grid note)."""
+def _build_bucket_rect(dial, bucket_box, dx=0):
+    """One shared bucket-only rect: dial -> halo -> bucket over
+    the bucket box, composited once per prepare() and stamped
+    by draw() over every body rect (the body shapes never
+    reach the bucket's pixels - see the grid note). v25:
+    built TWICE, once per floor side (dx=0 at BUCKET,
+    dx=BUCKET_L[0]-BUCKET[0] for the mirrored home), so the
+    stamp follows wherever the bucket-move routine left the
+    bucket - no prepare() rebuild when it moves."""
     kx0, ky0, kx1, ky1 = bucket_box
     views, bands = _rect_views(dial, kx0, ky0,
                                kx1 - kx0 + 1, ky1 - ky0 + 1)
     if _halo_r:
         r = _halo_r
-        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
-            _draw_bucket(views, _halo_pal, dx, dy, True)
-    _draw_bucket(views, _pal)
+        for hdx, hdy in ((-r, 0), (r, 0), (0, -r), (0, r)):
+            _draw_bucket(views, _halo_pal, dx + hdx, hdy, True)
+    _draw_bucket(views, _pal, dx)
     return bands
 
 
@@ -1064,42 +1188,37 @@ def prepare(dial=None, frost=None, backlight=None):
     pad = 2 + max(_halo_r, _rim_r)
     fig = Figure()
     body_box = {}
-    for name, bend in (("stand", 0.0), ("dip", 1.0)):
+    for name, bend in (("stand", 0.0), ("dip", 1.0),
+                       ("dipL", -1.0)):
         _track = [9999, 9999, -9999, -9999]
         _draw_body((), fig, HOME_FEET, bend, _RAW_PALETTE)
         body_box[name] = _padded_box(pad)
-    _track = [9999, 9999, -9999, -9999]
-    _draw_bucket((), _RAW_PALETTE)
-    bucket_box = _padded_box(pad)
+    # the bucket's box at BOTH floor sides (v25): measured by
+    # extent tracking at each home, drawn into two shared
+    # stamps below
+    bucket_box = {}
+    for side, dx in (("r", 0), ("l", BUCKET_L[0] - BUCKET[0])):
+        _track = [9999, 9999, -9999, -9999]
+        _draw_bucket((), _RAW_PALETTE, dx)
+        bucket_box[side] = _padded_box(pad)
     _track = None
     rects = {}
-    bucket_bands = None
-    for name, bend in (("stand", 0.0), ("dip", 1.0)):
+    for name, bend in (("stand", 0.0), ("dip", 1.0),
+                       ("dipL", -1.0)):
         xs, ys = _GRIDS[name]
         bb = body_box[name]
         per = {}
         for oy in ys:
             for ox in xs:
-                # the bucket split: bake the bucket into the
-                # rect only when the shifted (halo-padded) body
-                # box reaches the bucket box - always true for
-                # the dip (he leans over the bucket), and for
-                # the rightmost standing columns
-                baked = name == "dip" or (
-                    bb[0] + ox <= bucket_box[2]
-                    and bucket_box[0] <= bb[2] + ox
-                    and bb[1] + oy <= bucket_box[3]
-                    and bucket_box[1] <= bb[3] + oy)
-                per[(ox, oy)] = (_build_rect(dial, fig, bend,
-                                             ox, oy, bb,
-                                             bucket_box, baked),
-                                 baked)
-                if not baked and bucket_bands is None:
-                    bucket_bands = _build_bucket_rect(dial,
-                                                      bucket_box)
+                per[(ox, oy)] = _build_rect(dial, fig, bend,
+                                            ox, oy, bb)
         rects[name] = per
     _rects = rects
-    _bucket_bands = bucket_bands
+    _bucket_bands = {
+        "r": _build_bucket_rect(dial, bucket_box["r"], 0),
+        "l": _build_bucket_rect(dial, bucket_box["l"],
+                                BUCKET_L[0] - BUCKET[0]),
+    }
     _prep_key = key
 
 
@@ -1170,6 +1289,15 @@ class Figure:
             "cuckoo_clear": 0.0,  # 0..1, cuckoo: the porthole's
                                  # cleared fraction - draw() draws
                                  # the sharp patch while > 0 (v20)
+            "bend_dir": None,    # v25: the dip's lean direction,
+                                 # +1 / -1; None = follow the
+                                 # bucket's current side (pose())
+            "bucket_carried": False,  # v25: the bucket-move
+                                 # routine is carrying the bucket
+                                 # (draw() hangs it from the right
+                                 # hand instead of stamping it)
+            "tap_lift": 0,       # v25: arms-crossed foot tap -
+                                 # the right boot's lift, px (0/3)
             # idle-life fields (Nov 15, 2026): show.py's routines
             # drive BOTH hands explicitly and hang props on them.
             # tip_l / tip_r override the hang (and the show tip)
@@ -1303,12 +1431,19 @@ class Figure:
             bend = self.bend
         if feet is None:
             feet = (self.feet_x, self.feet_y)
-        if bend <= 0.001:
-            return (x, y)
+        if abs(bend) <= 0.001:   # v25: was bend <= 0.001, which
+            return (x, y)        # silently un-bent EVERY -1 lean
+                                 # (the dipL sprite) - the mirrored
+                                 # dip stood upright and missed the
+                                 # bucket by 47 px (test_reach)
         hip_x = feet[0]
         hip_y = feet[1] - HIP_H
         ang = bend * BEND_RAD
-        crouch = bend * 14
+        crouch = abs(bend) * 14  # v25: bend carries the lean's
+                                 # SIGN (the dipL sprite bends
+                                 # -1); the crouch is a drop, not
+                                 # a direction - identical to the
+                                 # old value for every bend >= 0
         dx = x - hip_x
         dy = y - hip_y
         ca = math.cos(ang)
@@ -1324,8 +1459,18 @@ class Figure:
         continuous (the working hand still tracks the stroke
         frontier exactly). The eased bend is reported alongside
         its snapped draw value."""
-        bd = 1.0 if self.bend >= 0.5 else 0.0
-        sprite = "dip" if bd >= 1.0 else "stand"
+        # the drawn lean (v25): the intent's bend_dir picks the
+        # dip sprite - +1 the classic dip toward the bucket's
+        # right home, -1 the mirrored dipL; with no explicit
+        # direction it follows the bucket's CURRENT side, so
+        # the show's dip and the sip lean wherever the last
+        # bucket move left the bucket
+        bdir = self.intent["bend_dir"]
+        if bdir is None:
+            bdir = 1 if self.bucket_x >= clockface.CX else -1
+        bd = float(bdir) if self.bend >= 0.5 else 0.0
+        sprite = ("dip" if bd == 1.0 else
+                  "dipL" if bd == -1.0 else "stand")
         xs, ys = _GRIDS[sprite]
         sox = _snap(self.body_x - HOME_FEET[0], xs)
         soy = _snap(self.body_y - HOME_FEET[1], ys)
@@ -1345,10 +1490,24 @@ class Figure:
         # hugging his own thighs
         hang_r = (sh_r[0] + HANG_OUT, sh_r[1] + HANG_DY)
         hang_l = (sh_l[0] - HANG_OUT, sh_l[1] + HANG_DY)
-        if bd >= 1.0:
-            # knee brace: on the thigh above the knee (derived
-            # from HIP_H - the thigh's upper third)
-            hang_l = (fx - 18, fy - HIP_H + 30)
+        if bd != 0.0:
+            # knee brace: the FREE hand rests on the thigh
+            # above the knee (derived from HIP_H - the thigh's
+            # upper third). Which hand is free follows the
+            # working hand: the classic dips work the right
+            # hand and brace the left; a left-handed dip (the
+            # mirrored sip, v25) braces the right instead. The
+            # working hand must be the one on the lean's side -
+            # leaning left, the right shoulder rides ~23 px
+            # higher than it does leaning right (rigid torso),
+            # and a right-handed grab at the left floor lands
+            # ~18 px short (test_reach's mirrored proofs)
+            worker_l = self.intent["tip_l"] is not None or \
+                (tip is not None and tool in ("cloth", "hand"))
+            if worker_l and self.intent["tip_r"] is None:
+                hang_r = (fx + 18, fy - HIP_H + 30)
+            else:
+                hang_l = (fx - 18, fy - HIP_H + 30)
         hand_r = hang_r
         hand_l = hang_l
         if tip is not None and tool == "brush":
@@ -1369,9 +1528,9 @@ class Figure:
         # branch while it is working; at the plain hang (no
         # override, no bend) re-seed from the score, so the rest
         # pose always returns to the approved outward bow
-        hint_r = self._elb_hint["r"] if over_r or bd >= 1.0 \
+        hint_r = self._elb_hint["r"] if over_r or bd != 0.0 \
             else None
-        hint_l = self._elb_hint["l"] if over_l or bd >= 1.0 \
+        hint_l = self._elb_hint["l"] if over_l or bd != 0.0 \
             else None
         elb_r = ik(sh_r[0], sh_r[1], hand_r[0], hand_r[1], fx,
                    hint_r)
@@ -1402,6 +1561,9 @@ class Figure:
             "mug_home": self.intent["mug_home"],
             "apple_bites": self.intent["apple_bites"],
             "hanky_puff": self.intent["hanky_puff"],
+            # v25 draw state
+            "bucket_carried": self.intent["bucket_carried"],
+            "tap_lift": self.intent["tap_lift"],
         }
 
     # --- drawing ---
@@ -1467,36 +1629,52 @@ class Figure:
         if behind is not None:
             self._draw_arm(canvas, pose, behind, pal, hr)
         if pose["mug_home"]:
-            _draw_mug(canvas, MUG_HOME[0], MUG_HOME[1], pal)
-        bands, baked = _rects[pose["sprite"]][pose["snap"]]
-        if not baked:
-            # bucket split: this rect is body-only - stamp the
-            # shared bucket rect first (the two boxes are
-            # disjoint, so the stamp cannot interact with the
-            # body rect that follows)
-            for win, y0 in canvas.band_windows():
-                hit = _bucket_bands.get(y0 // display.BAND_H)
-                if hit is not None:
-                    src, bx, by = hit
-                    win.blit(src, bx, by)
+            # the mug's home follows the bucket's side (v25)
+            mx, my = mug_home(pose["bucket_x"])
+            _draw_mug(canvas, mx, my, pal)
+        bands = _rects[pose["sprite"]][pose["snap"]]
         for win, y0 in canvas.band_windows():
             hit = bands.get(y0 // display.BAND_H)
             if hit is not None:
                 src, bx, by = hit
                 win.blit(src, bx, by)
+        if not pose["bucket_carried"]:
+            # the bucket (v25): stamped OVER the body rect at
+            # its current side - the rects are body-only now,
+            # and the body shapes never reach the bucket's
+            # pixels, so the stamp is exact (see _build_rect).
+            # While the bucket-move routine carries it, the
+            # floor stamp is skipped and the bucket hangs from
+            # his hand instead (below, before the arms)
+            stamp = _bucket_bands[
+                "r" if pose["bucket_x"] >= clockface.CX else "l"]
+            for win, y0 in canvas.band_windows():
+                hit = stamp.get(y0 // display.BAND_H)
+                if hit is not None:
+                    src, bx, by = hit
+                    win.blit(src, bx, by)
+        if pose["tap_lift"]:
+            # the arms-crossed foot tap (v25): the baked right
+            # boot is covered with dial and redrawn lifted
+            self._draw_tap_boot(canvas, pose)
         if pose["cap_off"]:
             # hair over the baked cap: an ellipse patch on the
             # head's cap zone (cap band + brim live at head
-            # centre -22..-5, +-20 wide - see _draw_head)
+            # centre -24..-5, +-20 wide - see _draw_head)
             hx, hy = pose["head"]
-            _band_ellipse(canvas, hx, hy - 10, 20, 13, pal[_P_HAIR])
-            _band_ellipse(canvas, hx, hy - 13, 15, 9, pal[_P_HAIR])
+            _band_ellipse(canvas, hx, hy - 11, 20, 14, pal[_P_HAIR])
+            _band_ellipse(canvas, hx, hy - 14, 15, 10, pal[_P_HAIR])
         if pose["cuckoo_clear"] > 0.0:
             # the cuckoo porthole (v20): the sharp patch goes
             # over the frosted body but UNDER the arms - the
             # cloth hand wipes in front of his face, on the
             # glass, so it must draw after the patch
             self._draw_cuckoo_patch(canvas, pose)
+        if pose["bucket_carried"]:
+            # the carried bucket hangs from the right hand,
+            # drawn before the arms so the hand grips over
+            # the rim (v25)
+            self._draw_bucket_frame(canvas, pose)
         for side in ("l", "r"):
             if side != behind:
                 self._draw_arm(canvas, pose, side, pal, hr)
@@ -1518,6 +1696,10 @@ class Figure:
         elif pose["prop_l"] == "hanky":
             _draw_hanky(canvas, pose["hand_l"], pose["hanky_puff"],
                         pal)
+        elif pose["prop_l"] == "mug":
+            # the mirrored sip (v25): the mug in the left hand
+            _draw_mug(canvas, pose["hand_l"][0],
+                      pose["hand_l"][1] - 2, pal)
         if pose["prop_r"] == "cap":
             hx, hy = pose["hand_r"]
             _draw_cap_prop(canvas, hx, hy + 6, pal)
@@ -1535,6 +1717,63 @@ class Figure:
             _band_poly(canvas, _seg_coords(cx, cy - 4, cx + 1,
                                            cy - 8, 2),
                        pal[_P_STEM])
+
+    def _draw_bucket_frame(self, canvas, pose):
+        """The bucket in his right hand (v25, the bucket-move
+        routine's carry): the floor bucket redrawn per frame
+        at hand + (0, +16) - the rim just under the hand, the
+        paint line at the grip. Drawn through band views over
+        the frame canvas; only while carried, so its
+        primitives are routine-scoped. NO halo pass: the halo
+        is the frost's contact glow where a shape meets the
+        glass, and a bucket swinging in his hand has no such
+        contact to fake - and the pass would cost ~18 calls
+        on carry frames for an edge nobody can see (the
+        floor bucket keeps its halo, in the stamp)."""
+        hx, hy = pose["hand_r"]
+        dx = int(round(hx)) - BUCKET[0]
+        dy = int(round(hy)) + 16 - BUCKET[1]
+        views = [(win, 0, y0, display.BAND_H)
+                 for win, y0 in canvas.band_windows()]
+        _draw_bucket(views, _pal, dx, dy)
+
+    def _draw_tap_boot(self, canvas, pose):
+        """The tapping right boot (v25, arms-crossed routine):
+        the baked boot is erased with a dial window, the leg
+        bottom and the (static) left boot are redrawn, and the
+        right boot goes back lifted by pose["tap_lift"]. The
+        cuckoo patch's erase trick, at boot scale: 1 window
+        blit + 3 shapes, only on tap frames."""
+        fx, fy = pose["feet"]
+        fx = int(round(fx))
+        fy = int(round(fy))
+        lift = int(pose["tap_lift"])
+        pal = _pal
+        dial = self.dial if self.dial is not None else display.dial()
+        # the erase window, clipped to the dial (the tap only
+        # runs standing, feet at the home line - the clip is
+        # belt-and-braces against a stray deep-sink frame)
+        x0 = max(0, fx - 1)
+        y0 = max(0, fy - 10)
+        w = min(480, fx + 29) - x0
+        h = min(480, fy + 6) - y0
+        if w > 0 and h > 0:
+            for win, wy0 in canvas.band_windows():
+                if y0 < wy0 + display.BAND_H and wy0 < y0 + h:
+                    win.blit(dial.window(x0, y0, w, h), x0,
+                             y0 - wy0)
+        views = [(win, 0, y0, display.BAND_H)
+                 for win, y0 in canvas.band_windows()]
+        # the leg bottom the erase took with the boot
+        _poly_v(views, _quad(fx + 5, fy - 10, fx + 20, fy - 10,
+                             fx + 20, fy - 1, fx + 6, fy - 1),
+                pal[_P_OVDK])
+        # the left boot's right edge sits inside the erased
+        # strip - redrawn at rest, unchanged
+        _ellipse_v(views, fx - 10, fy - 2, 12, 5, pal[_P_BOOT])
+        # the right boot, lifted
+        _ellipse_v(views, fx + 13, fy - 2 - lift, 12, 5,
+                   pal[_P_BOOT])
 
     def _draw_cuckoo_patch(self, canvas, pose):
         """The cuckoo's clear circle (v20): build the sharp
