@@ -8,3 +8,4 @@ prov.py
 updater.py
 admin.py
 setupface.py
+connectface.py

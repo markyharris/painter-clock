@@ -20,6 +20,10 @@
 #      for the whole portal session and look dead)
 #   5. NTP sync - the authority; non-fatal if it fails (the RTC
 #      carries the clock, and the loop re-syncs when it can)
+#   5b. The Connected splash (v23): the dial wearing the admin
+#      page's address, rendered once and held ~35 s (servicing
+#      admin) before the loop - boot joins only, never a
+#      mid-run reconnect
 #   6. The face's render_static() into the dial layer ->
 #      figure.prepare() (body rects over the dial)
 #   7. admin server + the updater's after-boot check (flag only)
@@ -50,6 +54,7 @@ import time
 import network
 
 import admin
+import connectface
 import display
 import figure as figmod
 import prov
@@ -72,6 +77,8 @@ FACES = {
 }
 
 JOIN_TIMEOUT_MS = 15000   # ~15 s, then the portal (rehoming)
+SPLASH_MS = 35000         # v23: the Connected screen's hold -
+                          # the middle of Mark's "30-45 seconds"
 LOOP_MS = 25              # idle slice; admin is serviced per slice
 SETTLE_MS = 1500          # keep framing this long after activity
 HOUSEKEEP_MS = 5000       # housekeeping cadence while idle
@@ -138,6 +145,44 @@ def _enter_portal(reason):
     except Exception as exc:
         print("main: setup screen failed:", exc)
     prov.run_portal()  # never returns (reboots on save)
+
+
+def _show_connected(cfg, wlan, ssid):
+    """The Connected splash (v23): paint the admin page's
+    address on the dial and show it. Called once per boot,
+    right after the NTP sync, so the clock behind the splash
+    is already time-true. Returns the ticks_ms the frame went
+    up (the caller holds it for SPLASH_MS), or None if the
+    render failed - fail-soft: boot continues to the face
+    exactly as before v23. The IP is read from the WLAN's
+    live ifconfig; the SSID is the one just joined."""
+    try:
+        ip = wlan.ifconfig()[0]
+        connectface.render(display.canvas(), ssid, ip,
+                           cfg.get("backlight", 50))
+        display.show()
+        print("main: connected - admin page at http://%s/ "
+              "(on the panel for %d s)"
+              % (ip, SPLASH_MS // 1000))
+        return time.ticks_ms()
+    except Exception as exc:
+        print("main: connected screen failed:", exc)
+        return None
+
+
+def _hold_splash(splash_from, app):
+    """Hold the Connected screen until SPLASH_MS has passed
+    since it went up, servicing admin in LOOP_MS slices - the
+    address on the glass must answer in a browser while it is
+    still displayed. Anything admin queues meanwhile (a
+    try-it, a config change) sits in the app dict and the run
+    loop picks it up on its first pass, exactly as if it had
+    arrived a moment later."""
+    while time.ticks_diff(time.ticks_ms(), splash_from) \
+            < SPLASH_MS:
+        admin.step(app)
+        time.sleep_ms(LOOP_MS)
+    print("main: connected screen done - the face takes over")
 
 
 def _face_module(name):
@@ -253,6 +298,12 @@ def main():
     timekeep.sync_ntp()
     app["time_source"] = timekeep.time_source()
 
+    # 5b. The Connected splash (v23) - boot joins only. The
+    # updater's reboot and the portal-save reboot both arrive
+    # here through this same boot, so they splash too; nothing
+    # later in the run can re-enter this path.
+    splash_from = _show_connected(cfg, wlan, ssid)
+
     # 6. Dial layer, figure rects.
     face_name = cfg.get("face", "painter")
     frost_now = cfg.get("frost", 55)
@@ -277,8 +328,16 @@ def main():
     _apply_cuckoo(show, cfg)
     canvas = display.canvas()
 
-    # 8. The run loop.
+    # 8. The run loop. First, the splash's remaining hold
+    # (stages 6-7 spent part of it): the face's first frame is
+    # composed only once the address has had its ~35 s, and it
+    # paints the true time - the Show accounts from its first
+    # tick (its last_total starts None), so a late loop entry
+    # owes no show and skips none, and the midnight/monotonic
+    # invariants are untouched.
     print("main: running")
+    if splash_from is not None:
+        _hold_splash(splash_from, app)
     drawn_total = None      # total-minutes of the last drawn frame
     last_active_ms = boot_ms
     last_housekeep = boot_ms
