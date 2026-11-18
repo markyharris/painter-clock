@@ -2,7 +2,8 @@
 # do not edit by hand (regenerate instead).
 #
 # The ATTITUDE face's maneuver tables (Nov 17, 2026,
-# v29): (bank, pitch) sampled every 0.5 s across three
+# v29; resampled every 0.1 s for v29.1, Nov 18, 2026):
+# (bank, pitch) sampled every 0.1 s across three
 # C182-paced maneuver timelines - the same profile
 # models that generated Mark's maneuver videos that
 # evening (lazy eight: entry 105 kt bleeding to 62 kt,
@@ -15,41 +16,96 @@
 #
 # One byte per value: degrees = (byte - 128) / 2.
 # Segment order is the cycle order; DURATIONS are the
-# sampled lengths, (count - 1) * 0.5 - at most half a
-# second shy of the videos' 87.33 / 114.38 / 90.67 s.
+# sampled lengths, (count - 1) * DT - at most a tenth
+# of a second shy of the videos' 87.33 / 114.38 /
+# 90.67 s. DT is the sample interval: the face reads
+# it from here, never hard-codes it.
 import binascii
 
 NAMES = ('Lazy Eight', 'Chandelle', 'Eights on Pylons')
-COUNTS = (175, 229, 182)
-DURATIONS = (87.0, 114.0, 90.5)
+COUNTS = (874, 1144, 907)
+DURATIONS = (87.3, 114.3, 90.6)
+DT = 0.1
 
 _BANK_0 = (
-    'gICAgH9/f359fXx7enl4d3Z1dHJxcG5ta2poZ2VkYmBeXFlXVFJPTElHRURERUZJS05RU1ZZW11fYWNlZmhpa2xub3Fyc3R2d3h5ent8fH1+fn9/gICAgI',
-    'CAgIGBgYKCg4SFhYaHiIqLjI2PkJGTlJaXmZqcnp+ho6aoq62ws7a4ury8vLq4trOwrquopqShn56cmpmXlpSTkZCPjYyLioiHhoWFhIOCgoGBgYCAgA==',
+    'gICAgICAgICAgICAgICAgICAf39/f39/f39/f39/f35+fn5+fn5+fn19fX19fX18fHx8fHx7e3t7e3t6enp6enp5eXl5eXh4eHh3d3d3d3Z2dnZ1dXV1dH',
+    'R0dHNzc3NycnJycXFxcHBwcG9vb25ubm5tbW1sbGxsa2trampqaWlpaWhoaGdnZ2ZmZmVlZWVkZGRjY2NiYmFhYWBgYF9fXl5eXV1cXFtbWlpZWVhYV1dW',
+    'VlVVVFRTU1JSUVFQT09OTk1NTExLSkpJSUhISEdHRkZGRUVFRURERERERERERERFRUVFRkZGR0dISElJSkpLS0xMTU1OTk9QUFFRUlJTU1RVVVZWV1dYWF',
+    'lZWlpbW1tcXF1dXl5eX19gYGBhYWJiYmNjY2RkZGVlZWZmZmZnZ2doaGhpaWlqampqa2trbGxsbW1tbW5ubm9vb29wcHBxcXFxcnJycnNzc3N0dHR0dXV1',
+    'dXZ2dnZ3d3d3d3h4eHh5eXl5eXp6enp6e3t7e3t7fHx8fHx8fH19fX19fX1+fn5+fn5+fn5/f39/f39/f39/f39/gICAgICAgICAgICAgICAgICAgICAgI',
+    'CAgICAgICAgICAgICBgYGBgYGBgYGBgYGBgoKCgoKCgoKCg4ODg4ODg4SEhISEhIWFhYWFhYaGhoaGh4eHh4eIiIiIiImJiYmKioqKiouLi4uMjIyMjY2N',
+    'jY6Ojo+Pj4+QkJCQkZGRkpKSkpOTk5SUlJWVlZWWlpaXl5eYmJiYmZmZmpqam5ubnJycnZ2dnp6en5+foKChoaGioqOjo6SkpaWmpqenqKipqaqqq6usrK',
+    '2trq6vsLCxsbKys7S0tbW2tre3uLi5ubm6urq7u7u8vLy8vLy8vLy8vLu7u7u6urq5ubi4t7e2trW1tLSzs7KxsbCwr6+urq2srKurqqqpqaiop6empqWl',
+    'pKSko6OioqGhoaCgn5+fnp6enZ2dnJycm5ubmpqamZmZmZiYmJeXl5aWlpWVlZWUlJSTk5OTkpKSkZGRkZCQkI+Pj4+Ojo6OjY2NjIyMjIuLi4uLioqKio',
+    'mJiYmIiIiIiIeHh4eHhoaGhoaFhYWFhYWEhISEhISDg4ODg4ODg4KCgoKCgoKCgoGBgYGBgYGBgYGBgYGAgICAgICAgICAgICAgICAgA==',
 )
 _PITCH_0 = (
-    'gIKDhYaIiYuMjo+QkpOUlZaXmJmam5ucnZ2dnp6enp6enZ2cm5mXlJGNiYR+eXRwbWpoZmRkY2JiYmJiYmNjY2RkZWZnZ2hpamxtbm9xcnN1dnh5e3x+f4',
-    'GDhIaHiYqMjY+QkZKUlZaXmJmampucnJ2dnp6enp6enp2cm5qYlZKPioWAe3ZxbmtoZmVkY2NiYmJiYmJjY2RkZWVmZ2hpamtsbW9wcXN0dnd5enx9fw==',
+    'gICBgYGCgoKDg4ODhISEhYWFhoaGh4eHh4iIiImJiYqKioqLi4uMjIyMjY2Njo6Ojo+Pj5CQkJCRkZGRkpKSkpOTk5OUlJSUlZWVlZWWlpaWl5eXl5eYmJ',
+    'iYmJiZmZmZmZmampqampqbm5ubm5ubnJycnJycnJycnZ2dnZ2dnZ2dnZ2dnZ6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6dnZ2dnZ2dnZycnJyc',
+    'm5ubm5qampqZmZiYmJeXlpaVlJSTk5KRkJCPjo2Mi4uKiYiHhoWEg4GAf359fHt6eXh3dnV0c3NycXBvb25tbWxra2pqaWloaGhnZ2ZmZmVlZWVkZGRkZG',
+    'RjY2NjY2NjY2JiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJjY2NjY2NjY2NjY2NjZGRkZGRkZGRkZWVlZWVlZWZmZmZmZmdnZ2dnZ2hoaGhoaWlp',
+    'aWlqampqamtra2tsbGxsbG1tbW1ubm5ub29vb3BwcHFxcXFycnJyc3NzdHR0dHV1dXZ2dnd3d3d4eHh5eXl6enp6e3t7fHx8fX19fn5+f39/f4CAgIGBgY',
+    'KCgoODg4SEhISFhYWGhoaHh4eIiIiIiYmJioqKi4uLi4yMjI2NjY2Ojo6Pj4+PkJCQkJGRkZGSkpKSk5OTk5SUlJSVlZWVlZaWlpaXl5eXl5iYmJiYmZmZ',
+    'mZmZmpqampqampubm5ubm5ucnJycnJycnJydnZ2dnZ2dnZ2dnZ2dnp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp2dnZ2dnZ2dnJycnJybm5ubmp',
+    'qamZmZmJiXl5aWlZWUlJOSkpGQkI+OjYyLiomIh4aFhIOCgYB/fn18e3p5eHd2dXRzcnFxcG9ubm1sbGtramppaWhoZ2dnZmZmZWVlZWRkZGRkY2NjY2Nj',
+    'Y2NjYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiY2NjY2NjY2NjY2NjY2RkZGRkZGRkZGVlZWVlZWVlZmZmZmZmZ2dnZ2dnaGhoaGhpaWlpaWpqam',
+    'pqa2tra2xsbGxtbW1tbW5ubm5vb29wcHBwcXFxcXJycnNzc3N0dHR1dXV1dnZ2d3d3d3h4eHl5eXp6ent7e3t8fHx9fX1+fn5/f3+AgA==',
 )
 _BANK_1 = (
-    'gH98d3JrY1hLREREREREREREREREREREREREREREREREREVGSEpMT1JVV1pdX2JkZmhqa21ub3BycnN0dXZ3d3h5eXp7e3x8fX1+fn5/f39/gICAgICAgI',
-    'CAgICAgICAgICAgICAgICAgICAgICAgICAgICDh4ySmqSxu7y8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLu6ube1sq+sqqekop+dm5mXlZSSkZCPjo2Mi4qK',
-    'iYiIh4aGhYSEg4OCgoKBgYGBgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==',
+    'gICAgH9/fn59fXx7enl4d3Z1dHNycG9ubWtqaGdlY2FfXVpYVVNQTUtIRkVERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE',
+    'REREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREVFRUVFRkZG',
+    'R0dHSEhISUlKSktLTExNTU5OT09QUVFSUlNTVFVVVlZXV1hZWVpaW1tcXF1dXl5fX2BgYWFiYmNjZGRkZWVmZmZnZ2hoaGlpaWpqamtra2xsbGxtbW1ubm',
+    '5ub29vb3BwcHBwcXFxcXJycnJycnNzc3Nzc3R0dHR0dXV1dXV1dXZ2dnZ2dnd3d3d3d3d4eHh4eHh4eXl5eXl5eXp6enp6enp6e3t7e3t7e3t7fHx8fHx8',
+    'fHx8fX19fX19fX19fX1+fn5+fn5+fn5+fn5+fn9/f39/f39/f39/f39/f39/f3+AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI',
+    'CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA',
+    'gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYGCgoODhIWGh4iJiouMjY+QkZKUlZaYmpudn6GkpqmrrrGztri6u7y8vL',
+    'y8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8',
+    'vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy7u7u7u7q6urq5ubm4uLe3t7a2tbW0tLOzsrKxsLCvr66uraysq6uqqqmoqKenpqalpaSko6Oioq',
+    'GhoKCfn56enZ2cnJubm5qamZmZmJiYl5eXlpaWlZWVlJSUk5OTk5KSkpKRkZGRkJCQkI+Pj4+Pjo6Ojo6OjY2NjY2MjIyMjIyLi4uLi4uKioqKioqKiYmJ',
+    'iYmJiYiIiIiIiIiHh4eHh4eHhoaGhoaGhoaFhYWFhYWFhYWEhISEhISEhISDg4ODg4ODg4ODg4KCgoKCgoKCgoKCgoKCgYGBgYGBgYGBgYGBgYGBgYGBgY',
+    'CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA',
+    'gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==',
 )
 _PITCH_1 = (
-    'gICAgICAgIGBgoOEhYeIioyOj5GTlZeZm52eoKGio6SkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpK',
-    'Sko6Ggnp2bmZaUkpCOjIqIhoWDgoGAgH9/gICAgICAgIGBgoOEhYaIiYuNj5GTlZaYmpyen6Gio6SkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk',
-    'pKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSko6Khn52bmZeVk5GPjIqJh4WEgoGAgH9/gA==',
+    'gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGBgYGBgYGBgYGBgoKCgoKCg4ODg4OEhISEhYWFhYaGhoeHh4eIiIiJiYmKioqLi4uMjIyNjY6Ojo',
+    '+Pj5CQkZGRkpKSk5OUlJSVlZaWlpeXmJiYmZmZmpqam5ucnJydnZ2enp6fn5+foKCgoaGhoaKioqKio6Ojo6Ojo6SkpKSkpKSkpKSkpKSkpKSkpKSkpKSk',
+    'pKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpK',
+    'SkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk',
+    'pKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpK',
+    'SkpKSjo6Ojo6KioqKhoaGhoKCgn5+fnp6enZ2dnJybm5uampmZmZiYl5eWlpaVlZSUk5OSkpKRkZCQj4+Pjo6NjY2MjIuLioqKiYmJiIiHh4eGhoaFhYWF',
+    'hISEg4ODg4KCgoKCgYGBgYGAgICAgICAgICAf39/f39/f3+AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYGBgYGBgYGBgYGCgoKCgo',
+    'KDg4ODg4SEhISFhYWFhoaGh4eHh4iIiImJiYqKiouLi4yMjY2Njo6Oj4+PkJCRkZGSkpOTk5SUlZWVlpaWl5eYmJiZmZmampubm5ycnJ2dnZ6enp+fn6Cg',
+    'oKChoaGhoqKioqKjo6Ojo6OkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpK',
+    'SkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk',
+    'pKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpK',
+    'SkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKOjo6OjoqKioqGhoaGgoKCfn5+enp6dnZycnJubmpqamZmYmJiXl5aWlZWV',
+    'lJSTk5KSkpGRkJCPj4+Ojo2NjIyMi4uKioqJiYmIiIeHh4aGhoWFhYSEhISDg4ODgoKCgoGBgYGBgYCAgICAgICAgIB/f39/f39/f4CAgICAgA==',
 )
 _BANK_2 = (
-    'gHlnUkA5OTo6Ozs8PD0+Pz9AQUJDQ0RFRUZHR0hJSUpKSktLS0xMTExMTExMTExLS0tKSklJSEhHR0ZFRURDQkFBQD8+Pj08PDs6Ojk5OkVYbXyAgICAgI',
-    'CAgIGNoLXEx8fGxsXFxMPDwsHAwL++vby8u7q6ubi4t7e2trW1tbS0tLS0tLS0tLS0tbW1tra3t7i4ubq6u7y8vb6/wMDBwsPDxMXFxsbHx8S1oY2BgICA',
-    'gICAgIA=',
+    'gIB/fXt5dnJva2djXlpWUk5KRkNAPTs6OTk5OTk5OTk5OTo6Ojo6Ojo6Ojo7Ozs7Ozs7Ozs8PDw8PDw8PD09PT09PT0+Pj4+Pj4/Pz8/Pz8/QEBAQEBAQE',
+    'FBQUFBQUJCQkJCQkNDQ0NDQ0NERERERERERUVFRUVFRUZGRkZGRkZHR0dHR0dHR0hISEhISEhISElJSUlJSUlJSUpKSkpKSkpKSkpKSktLS0tLS0tLS0tL',
+    'S0tLS0tMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEtLS0tLS0tLS0tLS0tLS0tLSkpKSkpKSkpKSkpJSUlJSU',
+    'lJSUlJSEhISEhISEhHR0dHR0dHR0ZGRkZGRkZGRUVFRUVFRURERERERENDQ0NDQ0NCQkJCQkJBQUFBQUFBQEBAQEBAPz8/Pz8/Pz4+Pj4+Pj49PT09PT09',
+    'PDw8PDw8PDw7Ozs7Ozs7Ozo6Ojo6Ojo6Ojo5OTk5OTk5OTk5Ojs9P0JFSExQVFhdYWVpbXF0d3p8fn+AgICAgICAgICAgICAgICAgICAgICAgICAgICAgI',
+    'CAgICAgICAgICAgICBgoSHiY2QlJicoKSprbG1uby/wsTGx8fHx8fHx8fHx8fGxsbGxsbGxsbGxcXFxcXFxcXExMTExMTExMPDw8PDw8PCwsLCwsLCwcHB',
+    'wcHBwMDAwMDAwL+/v7+/v76+vr6+vr69vb29vb28vLy8vLy8u7u7u7u7u7q6urq6urq5ubm5ubm5ubi4uLi4uLi4uLe3t7e3t7e3t7e2tra2tra2tra2tr',
+    'W1tbW1tbW1tbW1tbW1tbW0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS1tbW1tbW1tbW1tbW1tbW1tra2tra2',
+    'tra2tra2t7e3t7e3t7e3uLi4uLi4uLi4ubm5ubm5ubm6urq6urq6u7u7u7u7u7y8vLy8vLy9vb29vb2+vr6+vr6+v7+/v7+/wMDAwMDAwMHBwcHBwcLCws',
+    'LCwsLDw8PDw8PDxMTExMTExMTFxcXFxcXFxcbGxsbGxsbGxsbGx8fHx8fHx8fHx8bEwr+8ubWxramloZyYlJCNioeEgoGAgICAgICAgICAgICAgICAgICA',
+    'gICAgICAgICAgICAgICAgICAgICAgA==',
 )
 _PITCH_2 = (
-    'gIB/fn18e3p5eXh4d3d2dnZ2dnZ2dnZ3d3d4eHh5eXp6e3x8fX1+f3+AgIGCgoODhIWFhoaHh4iIiYmJiYqKioqKioqKiYmJiIiHhoaFhIOBgICAgICAgI',
-    'CAgICAf358e3p6eXh4d3d3dnZ2dnZ2dnZ2d3d3eHh5eXp6e3t8fH1+fn9/gIGBgoKDhISFhYaGh4eIiImJiYqKioqKioqKiomJiYiIh4aGhYSCgYCAgICA',
-    'gICAgIA=',
+    'gICAgICAgICAgH9/f39+fn5+fX19fHx8fHx7e3t7e3t6enp6enp6eXl5eXl5eXl4eHh4eHh4eHh3d3d3d3d3d3d3d3d3d3Z2dnZ2dnZ2dnZ2dnZ2dnZ2dn',
+    'Z2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ3d3d3d3d3d3d3d3d3d3d3eHh4eHh4eHh4eHh4eXl5eXl5eXl5eXl6enp6enp6enp7e3t7e3t7e3t8fHx8fHx8',
+    'fHx9fX19fX19fX5+fn5+fn5+f39/f39/f3+AgICAgICAgIGBgYGBgYGBgoKCgoKCgoKDg4ODg4ODg4OEhISEhISEhIWFhYWFhYWFhYaGhoaGhoaGhoaHh4',
+    'eHh4eHh4eHiIiIiIiIiIiIiIiIiYmJiYmJiYmJiYmJiYmJiYqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqJiYmJiYmJiYmJ',
+    'iYmJiYiIiIiIiIiIiIiHh4eHh4eHhoaGhoaGhoWFhYWFhYWEhISEg4ODgoKCgoGBgYGBgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI',
+    'CAgICAgICAgICAgICAgICAgICAgH9/f39/fn5+fX19fXx8fHx7e3t7e3t6enp6enp6eXl5eXl5eXl4eHh4eHh4eHh4d3d3d3d3d3d3d3d3d3Z2dnZ2dnZ2',
+    'dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2d3d3d3d3d3d3d3d3d3d3d3h4eHh4eHh4eHh4eHl5eXl5eXl5eXl6enp6enp6enp6e3t7e3',
+    't7e3t7fHx8fHx8fHx9fX19fX19fX5+fn5+fn5+fn9/f39/f39/gICAgICAgICBgYGBgYGBgYKCgoKCgoKCg4ODg4ODg4OEhISEhISEhISFhYWFhYWFhYaG',
+    'hoaGhoaGhoaHh4eHh4eHh4eHiIiIiIiIiIiIiIiIiYmJiYmJiYmJiYmJiYmJiYmKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio',
+    'qKiYmJiYmJiYmJiYmJiYiIiIiIiIiIiIiHh4eHh4eHh4aGhoaGhoaFhYWFhYWEhISEg4ODg4KCgoGBgYGBgICAgICAgICAgICAgICAgICAgICAgICAgICA',
+    'gICAgICAgICAgICAgICAgICAgICAgA==',
 )
 
 _BANK = (_BANK_0, _BANK_1, _BANK_2)
@@ -59,7 +115,7 @@ _decoded = {}
 
 def banks(seg):
     """The segment's bank samples as bytes (decoded once,
-    then cached - the blob is ~200 B per segment)."""
+    then cached - the blob is ~1 KB per segment)."""
     hit = _decoded.get(("b", seg))
     if hit is None:
         hit = binascii.a2b_base64("".join(_BANK[seg]))

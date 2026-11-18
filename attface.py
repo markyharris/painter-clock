@@ -12,7 +12,7 @@
 # THE ANIMATION IS DRAWN, NOT PLAYED: MicroPython has no
 # video decoder, and it needs none - the videos were
 # always just (bank, pitch) numbers over time. attdata.py
-# carries those numbers (sampled every 0.5 s from the
+# carries those numbers (sampled every 0.1 s from the
 # videos' own profile models; gen_attdata.py in the desk
 # harness), and this face draws the gauge from them the
 # way it draws everything else: C framebuf primitives
@@ -22,6 +22,23 @@
 # (deltas, midnight-safe via a days-from-civil count) -
 # never seconds-of-day modulo, so midnight cannot snap
 # the phase, and a backward NTP step simply adds nothing.
+#
+# v29.1 (Nov 18, 2026) - SMOOTH MOTION. Mark's bench
+# verdict on v29: the gauge "jumps quite a bit". It did:
+# main keyed this face at whole seconds (TICK_SECONDS),
+# so the ball stepped a full second of profile per
+# frame - up to ~10 deg of bank at the fast points.
+# Two changes: the face opts into sub-second keying
+# (TICK_MS below - main repaints it every 200 ms by
+# day), and main hands each day compose the loop's
+# ticks_ms in the state dict, so the phase advances by
+# real elapsed milliseconds between frames instead of
+# whole tuple seconds. The tables were resampled at
+# 0.1 s to match (attdata.DT - read from the data, not
+# hard-coded here). The second hand is untouched: it
+# reads the tuple's seconds, so it still steps once a
+# second while the ball glides under it. Night frames
+# carry no ms and keep the v29 tuple cadence exactly.
 #
 # THE GAUGE (the videos' instrument, at clock scale):
 # black bezel (r=237, grey rim line, four screws at the
@@ -75,6 +92,12 @@ import smoothfont
 
 NAME = "attitude"
 TICK_SECONDS = True
+# v29.1: sub-second compose by day - main repaints this
+# face every TICK_MS (and passes that ticks_ms to
+# compose in the state dict, which is what advances
+# the cycle phase smoothly). Night ignores it: the
+# sleep treatment still snaps on the minute.
+TICK_MS = 200
 
 CX = clockface.CX
 CY = clockface.CY
@@ -138,6 +161,8 @@ _TOTAL = attdata.DURATIONS[0] + attdata.DURATIONS[1] \
     + attdata.DURATIONS[2]
 _elapsed = 0.0           # accumulated cycle seconds
 _last_abs = None         # absolute seconds of the last compose
+_last_ms = None          # ticks_ms of the last compose that
+                         # carried one (v29.1 day frames)
 
 
 def _abs_seconds(tup):
@@ -156,12 +181,31 @@ def _abs_seconds(tup):
     return days * 86400 + tup[3] * 3600 + tup[4] * 60 + tup[5]
 
 
-def _advance(time_tuple):
+def _advance(time_tuple, ms=None):
     """Accumulate the delta since the last compose into
     the cycle. A backward step (an NTP correction) adds
-    nothing - the phase never snaps."""
-    global _elapsed, _last_abs
+    nothing - the phase never snaps.
+
+    Day frames (v29.1) carry the loop's ticks_ms: the
+    phase then advances by real milliseconds between
+    frames, folded across the ticks wrap (2**30 on the
+    board). A gap over 5 s - the face was away, a save
+    hitched the loop - or a backward step re-anchors
+    only: the frozen-while-away phase resumes where it
+    left off rather than leaping. Frames without ms
+    (the night cadence, the desk harness) keep the v29
+    rule exactly: whole tuple-second deltas."""
+    global _elapsed, _last_abs, _last_ms
     now = _abs_seconds(time_tuple)
+    if ms is not None:
+        if _last_ms is not None:
+            d = (ms - _last_ms + 536870912) % 1073741824 \
+                - 536870912
+            if 0 < d <= 5000:
+                _elapsed += d / 1000.0
+        _last_ms = ms
+        _last_abs = now
+        return _elapsed
     if _last_abs is not None:
         delta = now - _last_abs
         if delta > 0:
@@ -173,7 +217,7 @@ def _advance(time_tuple):
 def _position(elapsed):
     """(segment, local_t, bank_deg, pitch_deg) at an
     elapsed cycle time: the segment's samples, linearly
-    interpolated between the 0.5 s posts."""
+    interpolated between the attdata.DT posts."""
     pos = elapsed % _TOTAL
     seg = 0
     while pos >= attdata.DURATIONS[seg]:
@@ -181,7 +225,7 @@ def _position(elapsed):
         seg += 1
     banks = attdata.banks(seg)
     pitches = attdata.pitches(seg)
-    f = pos * 2.0
+    f = pos / attdata.DT
     i = int(f)
     last = len(banks) - 1
     if i >= last:
@@ -552,7 +596,7 @@ def compose(canvas, time_tuple, state=None):
     elif src is None:
         _draw_bezel(canvas)     # render_static never ran
     seg, local_t, bank, pitch = _position(
-        _advance(time_tuple))
+        _advance(time_tuple, state.get("ms")))
     _draw_ball(canvas, bank, pitch, night)
     _draw_gyro(canvas, bank, night)
     _draw_symbol(canvas, night)

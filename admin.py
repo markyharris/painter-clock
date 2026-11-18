@@ -21,7 +21,10 @@
 # sleep keys - sleep_enabled / sleep_start / sleep_end, whose
 # behaviour (lights out, he lies down, the hands snap pale;
 # SPEC Nov 13 addendum) landed in v15. cuckoo_enabled (v20)
-# silences the hourly cuckoo ritual without code. The old skeleton's
+# silences the hourly cuckoo ritual without code.
+# rotate_enabled / rotate_minutes / rotate_faces (v29.1)
+# rotate the face on a timer while the clock is awake -
+# the Face rotation section below. The old skeleton's
 # night_mode / night_dim checkbox fields are gone, and so is
 # tz_offset_h: the timezone is fixed UTC-7 in timekeep.py.
 #
@@ -73,6 +76,15 @@ DEFAULT_CONFIG = {
                              # (0 = the pre-v18 dial; v18)
     "show_date": True,       # the date on the face (v11)
     "cuckoo_enabled": True,  # the hourly cuckoo ritual (v20)
+    # Face rotation (v29.1): off by default - the clock
+    # keeps the owner's picked face, exactly as before.
+    # When on, main.py advances through rotate_faces
+    # every rotate_minutes while awake (never in the
+    # sleep window; a manual pick restarts the interval).
+    "rotate_enabled": False,
+    "rotate_minutes": 15,    # minutes between faces, 1..240
+    "rotate_faces": ["painter", "classic", "digital",
+                     "metar", "attitude"],
     "sleep_enabled": False,  # lights-out hours (v15 behaviour)
     "sleep_start": "22:00",
     "sleep_end": "06:00",
@@ -161,6 +173,34 @@ def _face_options(current):
     return out
 
 
+def _rotate_fields(cfg):
+    """The Face rotation section's innards (v29.1): the
+    enable checkbox, the interval in minutes (a number
+    input - its 1..240 range does not fit the sliders'
+    0..100 shape), and one checkbox per face for the
+    rotation set, wearing the pulldown's labels. The
+    handler reads them back under the same names:
+    rotate_enabled, rotate_minutes, rotate_face_<name>."""
+    faces = cfg.get("rotate_faces", list(FACES))
+    boxes = ""
+    for name in FACES:
+        chk = " checked" if name in faces else ""
+        boxes += ('<label><input type="checkbox" '
+                  'name="rotate_face_%s"%s> %s</label><br>'
+                  % (name, chk, FACE_LABELS.get(name, name)))
+    return ('<p><label><input type="checkbox" '
+            'name="rotate_enabled"%s> Rotate the face</label> '
+            'every <input type="number" name="rotate_minutes" '
+            'min="1" max="240" size="4" value="%s"> minutes<br>'
+            '<i>While the clock is awake it moves on to the '
+            'next ticked face below; lights-out hours keep '
+            'the sleeping face, and picking a face by hand '
+            'restarts the interval.</i></p>'
+            '<p>Faces in the rotation:<br>%s</p>'
+            % (" checked" if cfg.get("rotate_enabled", False)
+               else "", cfg.get("rotate_minutes", 15), boxes))
+
+
 def _show_date_options(current):
     out = ""
     for name, val in (("on", True), ("off", False)):
@@ -214,6 +254,7 @@ input[type=range]{width:230px;vertical-align:middle}
 .msg{background:#efe;border:1px solid #9c9;padding:6px}
 .sec-status{background:#e9f1fd}
 .sec-display{background:#e7f6ec}
+.sec-rotate{background:#f3e8ee}
 .sec-frost{background:#e2f5f7}
 .sec-sleep{background:#e9e4f5}
 .sec-idle{background:#fff6d9}
@@ -237,6 +278,9 @@ value="%s"> <i>for the METAR analog face - its dial wears
 this station's flight category</i></p>
 %s
 <p>Show date: <select name="show_date">%s</select></p>
+</fieldset>
+<fieldset class="sec-rotate"><legend>Face rotation</legend>
+%s
 </fieldset>
 <fieldset class="sec-frost"><legend>Frost &amp; backlight</legend>
 %s
@@ -290,6 +334,7 @@ This clock is a tribute, built with admiration.</i></p>
         _slider("brightness", "Brightness (0-255):", 255,
                 cfg["brightness"]),
         _show_date_options(cfg.get("show_date", True)),
+        _rotate_fields(cfg),
         _slider("frost", "Frosted glass (0-100):", 100,
                 cfg["frost"]),
         _slider("backlight", "Backlight (0-100):", 100,
@@ -412,6 +457,20 @@ def step(app):
             except ValueError:
                 pass
             cfg["cuckoo_enabled"] = "cuckoo_enabled" in form
+            cfg["rotate_enabled"] = "rotate_enabled" in form
+            try:
+                rm = int(form.get("rotate_minutes",
+                                  cfg.get("rotate_minutes", 15)))
+                if rm < 1:
+                    rm = 1
+                if rm > 240:
+                    rm = 240
+                cfg["rotate_minutes"] = rm
+            except ValueError:
+                pass        # junk keeps the saved minutes
+            cfg["rotate_faces"] = [
+                name for name in FACES
+                if ("rotate_face_" + name) in form]
             cfg["sleep_enabled"] = "sleep_enabled" in form
             if _valid_hhmm(form.get("sleep_start", "")):
                 cfg["sleep_start"] = form["sleep_start"]

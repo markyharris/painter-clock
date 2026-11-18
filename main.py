@@ -262,6 +262,45 @@ def _apply_cuckoo(show, cfg):
     show.set_cuckoo(cfg.get("cuckoo_enabled", True))
 
 
+def _switch_face(name, cfg):
+    """Put a face on the dial - THE face-switch path
+    (v29.1): resolve the module, hand it the admin
+    date/backlight settings, render its static layer,
+    re-render the night layer (the shared night canvas
+    must wear the SELECTED face's night, never a stale
+    one), and - for the painter - prepare the figure's
+    rects over the new dial. Returns (module, frost,
+    backlight); the caller owns the loop's face_name /
+    drawn_total / face_key state. An admin pick and a
+    rotation advance both come through here, so the two
+    can never drift apart."""
+    frost = cfg.get("frost", 55)
+    backlight = cfg.get("backlight", 50)
+    face_mod = _face_module(name)
+    _apply_date(face_mod, cfg)
+    _apply_backlight(face_mod, cfg)
+    face_mod.render_static(display.dial())
+    _render_night(face_mod)
+    if name == "painter":
+        figmod.prepare(display.dial(), frost, backlight)
+    print("main: face changed to %s" % name)
+    return face_mod, frost, backlight
+
+
+def _rotate_ms(cfg):
+    """The face-rotation interval in ms (v29.1): the
+    admin rotate_minutes key, 1..240; anything else
+    falls back to the 15-minute default - the same
+    fall-back spirit as the admin save path."""
+    try:
+        mins = int(cfg.get("rotate_minutes", 15))
+    except Exception:
+        mins = 15
+    if mins < 1 or mins > 240:
+        mins = 15
+    return mins * 60000
+
+
 def _wifi_str(wlan, ssid):
     try:
         if wlan is not None and wlan.isconnected():
@@ -386,6 +425,13 @@ def main():
     last_housekeep = boot_ms
     last_sleep_ms = boot_ms  # last frame composed while asleep
     last_status_s = -1
+    tick_ms = None          # the current face's TICK_MS
+                            # opt-in (v29.1), refreshed per
+                            # iteration for non-painter faces
+    rot_due_ms = None       # ticks_ms of the next rotation
+                            # advance (v29.1); None = unarmed
+                            # (rotation off, asleep, or just
+                            # switched - it arms afresh)
     while True:
         now_ms = time.ticks_ms()
         loc = timekeep.now_tuple()
@@ -422,11 +468,21 @@ def main():
             # (both new faces carry seconds; TICK_SECONDS is
             # the face's own say-so), and on the minute in the
             # sleep window (the night treatment snaps each
-            # minute, nothing animates).
+            # minute, nothing animates). A face may instead
+            # opt into sub-second repaints with TICK_MS
+            # (v29.1: the attitude face, 200 ms) - its day
+            # tick is then a ticks bucket, not the wall
+            # second; the night rule is unchanged.
             night_now = show.sleeping_at(total)
-            tick = loc[5] if (not night_now
-                              and getattr(face_mod, "TICK_SECONDS",
-                                          False)) else 0
+            tick_ms = getattr(face_mod, "TICK_MS", None)
+            if night_now:
+                tick = 0
+            elif tick_ms:
+                tick = now_ms // tick_ms
+            elif getattr(face_mod, "TICK_SECONDS", False):
+                tick = loc[5]
+            else:
+                tick = 0
             active = face_key != (total, tick, night_now)
             if active:
                 face_key = (total, tick, night_now)
@@ -440,7 +496,15 @@ def main():
                         {"night": True,
                          "dial": display.night_dial()})
                 else:
-                    face_mod.compose(canvas, loc)
+                    # A TICK_MS face also gets the loop's
+                    # ticks in its state dict (v29.1): its
+                    # phase advances by real milliseconds
+                    # between the sub-second frames. Every
+                    # other face is called exactly as before
+                    # (state None, as a bare two-arg call).
+                    face_mod.compose(
+                        canvas, loc,
+                        {"ms": now_ms} if tick_ms else None)
                 display.show()
             except Exception as exc:
                 print("main: frame failed:", exc)
@@ -499,19 +563,14 @@ def main():
                 print("main: show_date changed to %s" % date_now)
             if cfg.get("face", "painter") != face_name:
                 face_name = cfg.get("face", "painter")
-                frost_now = cfg.get("frost", 55)
-                backlight_now = cfg.get("backlight", 50)
-                face_mod = _face_module(face_name)
-                _apply_date(face_mod, cfg)
-                _apply_backlight(face_mod, cfg)
-                face_mod.render_static(display.dial())
-                _render_night(face_mod)
-                if face_name == "painter":
-                    figmod.prepare(display.dial(), frost_now,
-                                   backlight_now)
+                face_mod, frost_now, backlight_now = \
+                    _switch_face(face_name, cfg)
                 drawn_total = None  # force a repaint
                 face_key = None
-                print("main: face changed to %s" % face_name)
+                rot_due_ms = None   # a manual pick restarts
+                                    # the rotation interval
+                                    # (v29.1): the rotator
+                                    # below re-arms it fresh
             elif face_name == "painter" and \
                     (cfg.get("frost", 55) != frost_now
                      or cfg.get("backlight", 50) != backlight_now):
@@ -545,6 +604,54 @@ def main():
                 face_key = None     # force a repaint
                 print("main: metar airport changed to %s"
                       % airport_now)
+
+        # Face rotation (v29.1): while rotation is on and
+        # the clock is AWAKE, advance to the next face in
+        # the owner's set every rotate_minutes. The sleep
+        # window owns the display overnight - rotation
+        # simply does not advance there, and the deadline
+        # is dropped every sleeping iteration, so the
+        # interval re-arms fresh at wake. The schedule is
+        # a ticks deadline set at each switch - monotonic,
+        # midnight-safe, no wall-clock modulo. A switch
+        # goes through _switch_face, the very path an
+        # admin pick takes; a manual pick (the handler
+        # above) drops the deadline, so the interval
+        # restarts from the pick. A rotate_minutes edit
+        # applies from the next interval: the pending
+        # deadline stands. Rotation off costs this block
+        # one dict lookup a slice - nothing else changes.
+        rot_cfg = app["config"]
+        if rot_cfg.get("rotate_enabled", False) \
+                and not show.sleeping_at(total):
+            members = [f for f in rot_cfg.get(
+                "rotate_faces", list(FACES)) if f in FACES]
+            if len(members) >= 2:
+                if rot_due_ms is None:
+                    rot_due_ms = now_ms + _rotate_ms(rot_cfg)
+                elif time.ticks_diff(now_ms, rot_due_ms) >= 0:
+                    if face_name in members:
+                        nxt = members[
+                            (members.index(face_name) + 1)
+                            % len(members)]
+                    else:
+                        # the current face is not in the
+                        # set: the first advance joins it
+                        nxt = members[0]
+                    if nxt != face_name:
+                        print("main: rotation -> %s" % nxt)
+                        face_mod, frost_now, backlight_now = \
+                            _switch_face(nxt, rot_cfg)
+                        face_name = nxt
+                        drawn_total = None  # force a repaint
+                        face_key = None
+                    rot_due_ms = now_ms + _rotate_ms(rot_cfg)
+            else:
+                # an empty or single-face set has nowhere
+                # to go: no switching, no spinning
+                rot_due_ms = None
+        else:
+            rot_due_ms = None
 
         # Housekeeping, only while he is idle - never mid-show.
         if not show.running and \
