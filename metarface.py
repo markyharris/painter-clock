@@ -103,11 +103,17 @@ EDGE = 5            # the ink edge's extra width per hand
 
 # Text layout (cap-top rows; desk-verified in test_metar:
 # every line's ink stays inside r=230 of centre).
+# v28.1 (Nov 17, 2026): the whole bottom block rides
+# 14 px higher than v28 drew it - on the bench the
+# 6 o'clock tick (inner end row 441) poked into the
+# obs line's digits (ink bottom row 444). Shifted, the
+# obs ink bottom is row 430: a measured 10 px clear of
+# the tick (test_metar section D asserts >= 5).
 HDR_Y = 150         # "KFLG - VFR" (metar_h, Bold 46)
-L1_Y = 312          # wind      (metar_t, Regular 30)
-L2_Y = 348          # visibility
-L3_Y = 384          # clouds
-OBS_Y = 424         # "2323Z" (+ " STALE")
+L1_Y = 298          # wind      (metar_t, Regular 30)
+L2_Y = 334          # visibility
+L3_Y = 370          # clouds
+OBS_Y = 410         # "2323Z" (+ " STALE")
 
 _show_date = True        # admin "show_date" key; main.py drives
 
