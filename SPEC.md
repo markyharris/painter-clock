@@ -1160,3 +1160,16 @@ Mark's bench verdict on the v29.3 diagnostic: **"a little better"** without the 
 **Desk verification:** test_attface.py §A pins `TICK_MS == 250`; §B sweeps at 0.25 s (bounds 6.0/2.0); §F now counts **4 distinct attitude frames within one wall second**. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
 
 **Bench-only:** press **Update now** once (v29.4 rides the manifest: attface.py). Two outcomes teach different things: if 4 fps holds evenly handless, the v29.1 failure was the hand-plus-rate combination, and the remaining question is whether the hand returns as a sweep; if 250 ms slips even without the hand, the board's frame cost sits between 250 and 500 ms and 333 ms is the next step down.
+
+## Addendum (Nov 18, 2026) — v29.5: 60% speed, smoothed
+
+Mark's verdict on v29.4 (4 fps, handless): "still pretty jumpy." By then the experiments had cleared the drawing — handless at 4 fps the cadence holds — so what reads as jumpy is the step size itself: 5.5° of bank moves the horizon's edge ~18 px in a single frame, and a real gyro moves continuously. Asked for a way to smooth it out, Mark picked **60% speed plus smoothing** over half speed and over smoothing alone at full pace.
+
+**The changes (attface.py only):**
+- `RATE = 0.6` — `_advance` scales every cycle advance (both the millisecond day path and the tuple night path), so a 250 ms frame steps **0.15 cycle-seconds**: worst **3.5° of bank / 1.3° of pitch** per frame, and the full cycle stretches to ~8.1 minutes. attdata is untouched — the profiles are still the true C182 pace, flown slower — and the label fades, computed from cycle time, stretch with it.
+- `SMOOTH_W = 0.3` and `_smooth()` — the displayed attitude is `_position` sampled at elapsed−0.3, elapsed and elapsed+0.3 cycle-seconds, blended 1-2-1. Stateless (the same elapsed always draws the same attitude; no filter state to strand across re-anchors or midnights), and the segment/local time stay the centre sample's, so the bezel label keeps the true cycle position. Its job is the corners — roll-in onsets and reversals ease instead of kicking.
+- The second hand stays off; `TICK_MS` stays 250.
+
+**Desk verification:** test_attface.py §A pins `RATE` and `SMOOTH_W`; §B adds the effective-step sweep at 0.15 s (bounds 3.6/1.3); §D's ms steps are 500 ms (0.3 cycle-seconds at RATE) with the elapsed assertions re-based; §F still finds 4 distinct attitude frames in one wall second. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
+
+**Bench-only:** press **Update now** once (v29.5 rides the manifest: attface.py). Judge: the same maneuvers, flown statelier — steps a little over half the v29.4 size, with softened onsets. If it is still jumpier than Mark wants, the remaining dial is RATE itself (0.5 was the runner-up option); if the slowdown feels wrong, RATE back to 1.0 keeps the smoothing.

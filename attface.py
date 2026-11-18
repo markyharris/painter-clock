@@ -76,6 +76,26 @@
 # at 250 ms, measured on the data: 5.5 deg of bank,
 # 1.8 of pitch.
 #
+# v29.5 (Nov 18, 2026): v29.4 is "still pretty
+# jumpy" - and by then the experiments had cleared
+# the drawing: handless at 4 fps the cadence holds,
+# so what reads as jumpy is the step size itself
+# (5.5 deg of bank moves the horizon's edge ~18 px
+# in one frame; a real gyro moves continuously).
+# Mark's pick: slow the flying to 60% speed and
+# smooth it. RATE below scales every advance of
+# the cycle, so a 250 ms frame now steps 0.15
+# cycle-seconds - worst 3.5 deg of bank, 1.3 of
+# pitch - and the full cycle stretches to ~8
+# minutes. The profiles themselves are untouched
+# (attdata is the C182 pace, flown slower), and
+# the label fades stretch with the cycle. On top,
+# _smooth() rounds the displayed attitude with a
+# stateless binomial blur over +-SMOOTH_W
+# cycle-seconds, so the corners - roll-in onsets,
+# reversals - ease instead of kicking. The hand
+# stays off.
+#
 # THE GAUGE (the videos' instrument, at clock scale):
 # black bezel (r=237, grey rim line, four screws at the
 # diagonals), glass r=192. The ball is drawn per frame
@@ -224,10 +244,22 @@ def _abs_seconds(tup):
     return days * 86400 + tup[3] * 3600 + tup[4] * 60 + tup[5]
 
 
+# v29.5: the cycle runs at 60% of real time - see
+# the header note. One constant, applied to every
+# advance below; attdata keeps the true C182 pace.
+RATE = 0.6
+
+# v29.5: _smooth's binomial half-window, in cycle
+# seconds - the displayed attitude averages the
+# profile at e-W, e and e+W, weighted 1-2-1.
+SMOOTH_W = 0.3
+
+
 def _advance(time_tuple, ms=None):
     """Accumulate the delta since the last compose into
-    the cycle. A backward step (an NTP correction) adds
-    nothing - the phase never snaps.
+    the cycle, scaled by RATE (v29.5: the cycle runs
+    at 60% of real time). A backward step (an NTP
+    correction) adds nothing - the phase never snaps.
 
     Day frames (v29.1) carry the loop's ticks_ms: the
     phase then advances by real milliseconds between
@@ -237,7 +269,7 @@ def _advance(time_tuple, ms=None):
     only: the frozen-while-away phase resumes where it
     left off rather than leaping. Frames without ms
     (the night cadence, the desk harness) keep the v29
-    rule exactly: whole tuple-second deltas."""
+    rule exactly: whole tuple-second deltas, scaled."""
     global _elapsed, _last_abs, _last_ms
     now = _abs_seconds(time_tuple)
     if ms is not None:
@@ -245,16 +277,31 @@ def _advance(time_tuple, ms=None):
             d = (ms - _last_ms + 536870912) % 1073741824 \
                 - 536870912
             if 0 < d <= 5000:
-                _elapsed += d / 1000.0
+                _elapsed += d / 1000.0 * RATE
         _last_ms = ms
         _last_abs = now
         return _elapsed
     if _last_abs is not None:
         delta = now - _last_abs
         if delta > 0:
-            _elapsed += delta
+            _elapsed += delta * RATE
     _last_abs = now
     return _elapsed
+
+
+def _smooth(elapsed):
+    """The displayed (bank, pitch) at a cycle time:
+    _position's values at elapsed-SMOOTH_W, elapsed
+    and elapsed+SMOOTH_W blended 1-2-1 (v29.5).
+    Stateless - the same elapsed always draws the
+    same attitude - and the segment/local time stay
+    the centre sample's, so the label keeps the true
+    cycle position."""
+    _s0, _t0, b0, p0 = _position(elapsed - SMOOTH_W)
+    seg, local_t, b1, p1 = _position(elapsed)
+    _s2, _t2, b2, p2 = _position(elapsed + SMOOTH_W)
+    return seg, local_t, (b0 + 2.0 * b1 + b2) / 4.0, \
+        (p0 + 2.0 * p1 + p2) / 4.0
 
 
 def _position(elapsed):
@@ -639,7 +686,7 @@ def compose(canvas, time_tuple, state=None):
         canvas.copy_from(src)
     elif src is None:
         _draw_bezel(canvas)     # render_static never ran
-    seg, local_t, bank, pitch = _position(
+    seg, local_t, bank, pitch = _smooth(
         _advance(time_tuple, state.get("ms")))
     _draw_ball(canvas, bank, pitch, night)
     _draw_gyro(canvas, bank, night)
