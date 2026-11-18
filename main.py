@@ -470,7 +470,7 @@ def main():
             # sleep window (the night treatment snaps each
             # minute, nothing animates). A face may instead
             # opt into sub-second repaints with TICK_MS
-            # (v29.1: the attitude face, 200 ms) - its day
+            # (v29.1: the attitude face, TICK_MS) - its day
             # tick is then a ticks bucket, not the wall
             # second; the night rule is unchanged.
             night_now = show.sleeping_at(total)

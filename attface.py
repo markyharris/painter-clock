@@ -40,6 +40,19 @@
 # second while the ball glides under it. Night frames
 # carry no ms and keep the v29 tuple cadence exactly.
 #
+# v29.2 (Nov 18, 2026) - CADENCE. Mark's bench verdict
+# on v29.1: VERY choppy, and even the second hand
+# inconsistent. 5 fps was more than the board's
+# compose+show path sustains: frames overran the
+# 200 ms bucket, repaints landed irregularly, and the
+# time-true second hand showed it first. TICK_MS is
+# now 500 (2 fps) - real headroom in the bucket, so
+# the cadence holds; the worst per-frame move is
+# 10.5 deg of bank, still near half of v29's
+# whole-second jump. (The v29.1 SPEC's 250-300
+# fallback guess was not used: choppy at 200 says
+# the frame cost sits well past that.)
+#
 # THE GAUGE (the videos' instrument, at clock scale):
 # black bezel (r=237, grey rim line, four screws at the
 # diagonals), glass r=192. The ball is drawn per frame
@@ -97,7 +110,8 @@ TICK_SECONDS = True
 # compose in the state dict, which is what advances
 # the cycle phase smoothly). Night ignores it: the
 # sleep treatment still snaps on the minute.
-TICK_MS = 200
+# v29.2: 200 -> 500 (2 fps) - see the header note.
+TICK_MS = 500
 
 CX = clockface.CX
 CY = clockface.CY
