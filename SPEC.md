@@ -1140,3 +1140,13 @@ Mark's bench verdict on v29.1, hours after applying it: the attitude face is **V
 **Continuity at the new step** (test_attface.py §B sweep, measured on the data): worst per-frame move **10.5° of bank** (the pylons roll-in) and **3.0° of pitch** — against 4.5°/1.5° at 200 ms and v29's whole-second 19.5°/5.5°. Test changes: §A pins `TICK_MS == 500`; §B sweeps at 0.5 s (bounds 11.0/3.5); §F asserts 2 distinct attitude frames within one wall second, second hand still. Full suite green — **all 20 test files**, the op-count guard included. mpy-cross (v1.29.0) clean on attface.py and main.py.
 
 **Bench-only:** press **Update now** once (v29.2 rides the manifest: attface.py, main.py). Judge: an even cadence — the second hand stepping cleanly once a second, the ball moving twice a second under it. If 500 ms still slips on the board, the next step is 750 ms; if it holds easily and Mark wants smoother, 300–400 ms is the same one-line change in the other direction.
+
+## Addendum (Nov 18, 2026) — v29.3: the second hand comes off (diagnostic)
+
+Mark's bench verdict on v29.2: "still not much better." His experiment, adopted as-is: remove the attitude face's second hand and see what happens. It isolates a real suspect — the hand steps once a second against the ball's twice-a-second move, and an irregular cadence is most visible in a hand — and it costs one flag.
+
+**The change:** `attface.SECOND_HAND = False`. `_hands_day` skips the second hand and its tail dot when the flag is off; the drawing code stays in place, so bringing the hand back is the same one-line flip. Everything else is untouched: `TICK_MS` stays 500 (one variable at a time), the night face never had a second hand, the rotator is unchanged.
+
+**Desk verification:** test_attface.py §A pins the flag off; §D's ms block now runs a twin check — the same phase composed with the flag on differs from the flag-off frame, and the tail-dot pixel is CREAM with the hand and not without it; §F drops its second-hand probe. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
+
+**Bench-only:** press **Update now** once (v29.3 rides the manifest: attface.py). Judge the ball alone: does it move evenly at twice a second with no hand on the dial? If yes, the hand was the irritant — the options then are to leave it off or bring it back sweeping with the millisecond phase instead of stepping. If no, the frame cost itself is the problem and the next lever is cadence (750 ms) or a cheaper compose.

@@ -53,6 +53,18 @@
 # fallback guess was not used: choppy at 200 says
 # the frame cost sits well past that.)
 #
+# v29.3 (Nov 18, 2026) - DIAGNOSTIC, Mark's call:
+# v29.2 at 2 fps is "still not much better" on the
+# board. To isolate whether the second hand is part
+# of the problem - its once-a-second step against
+# the ball's twice-a-second move, or something in
+# its drawing - this build draws NO second hand on
+# the day face (SECOND_HAND below; the night face
+# never had one). The hand's code stays in place;
+# the bench verdict decides whether it returns, and
+# in what form. Cadence unchanged (TICK_MS 500):
+# one variable at a time.
+#
 # THE GAUGE (the videos' instrument, at clock scale):
 # black bezel (r=237, grey rim line, four screws at the
 # diagonals), glass r=192. The ball is drawn per frame
@@ -112,6 +124,11 @@ TICK_SECONDS = True
 # sleep treatment still snaps on the minute.
 # v29.2: 200 -> 500 (2 fps) - see the header note.
 TICK_MS = 500
+
+# v29.3 DIAGNOSTIC: no second hand on the day face -
+# see the header note. The drawing code stays; flip
+# to True to bring the hand back.
+SECOND_HAND = False
 
 CX = clockface.CX
 CY = clockface.CY
@@ -467,13 +484,14 @@ def _hands_day(fb, time_tuple):
     _edged_hand(fb, hour_ang, HOUR_LEN, HOUR_W, TAIL)
     min_ang = (time_tuple[4] + time_tuple[5] / 60.0) * 6.0
     _edged_hand(fb, min_ang, MIN_LEN, MIN_W, TAIL)
-    sec_ang = time_tuple[5] * 6.0
-    _edged_hand(fb, sec_ang, SEC_LEN, 4, TAIL + 10)
-    a = math.radians(sec_ang)
-    tx = CX - math.sin(a) * (TAIL + 10)
-    ty = CY + math.cos(a) * (TAIL + 10)
-    classicface._dot(fb, tx, ty, 7, INK)
-    classicface._dot(fb, tx, ty, 4, CREAM)
+    if SECOND_HAND:
+        sec_ang = time_tuple[5] * 6.0
+        _edged_hand(fb, sec_ang, SEC_LEN, 4, TAIL + 10)
+        a = math.radians(sec_ang)
+        tx = CX - math.sin(a) * (TAIL + 10)
+        ty = CY + math.cos(a) * (TAIL + 10)
+        classicface._dot(fb, tx, ty, 7, INK)
+        classicface._dot(fb, tx, ty, 4, CREAM)
     classicface._dot(fb, CX, CY, 11, INK)
     classicface._dot(fb, CX, CY, 5, CREAM)
 
