@@ -60,9 +60,9 @@ TRYIT = (("watch", "Wristwatch check"), ("cap", "Cap-off brow wipe"),
 DEFAULT_CONFIG = {
     # Clock face module (SPEC Nov 15 addendum): "painter"
     # (clockface.py) | "classic" (classicface.py) | "digital"
-    # (digitalface.py) | "metar" (metarface.py) - all four
-    # built (v26, v28); unknown names fall back to the
-    # painter.
+    # (digitalface.py) | "metar" (metarface.py) | "attitude"
+    # (attface.py) - all five built (v26, v28, v29); unknown
+    # names fall back to the painter.
     "face": "painter",
     # The METAR analog face's station (v28): one airport id,
     # validated by metar.normalise_airport on save.
@@ -78,7 +78,7 @@ DEFAULT_CONFIG = {
     "sleep_end": "06:00",
 }
 
-FACES = ("painter", "classic", "digital", "metar")
+FACES = ("painter", "classic", "digital", "metar", "attitude")
 
 # The tab / header icon: an analog clock face, hands (pointers)
 # at the classic 10:10, in the dial's own cream and ink. One
@@ -142,13 +142,14 @@ def _valid_hhmm(s):
     return 0 <= h < 24 and 0 <= m < 60
 
 
-# Pulldown labels (v26; the METAR analog joined in v28):
-# the values stay the config's face names; the labels say
-# what the faces are.
+# Pulldown labels (v26; the METAR analog joined in v28,
+# the attitude maneuvers in v29): the values stay the
+# config's face names; the labels say what the faces are.
 FACE_LABELS = {"painter": "Painter",
                "classic": "Classic analog",
                "digital": "Digital",
-               "metar": "METAR analog"}
+               "metar": "METAR analog",
+               "attitude": "Attitude maneuvers"}
 
 
 def _face_options(current):

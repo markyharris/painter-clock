@@ -72,15 +72,17 @@ import updater
 VERSION = "1.0"
 
 # Face selection (SPEC Nov 15 addendum): the admin "face" key
-# names a module with render_static()/compose(). All four
+# names a module with render_static()/compose(). All five
 # faces are built (the classic and digital landed in v26,
-# the METAR analog in v28); unknown names fall back to the
-# painter (bench_first_frame uses the same map).
+# the METAR analog in v28, the attitude maneuvers in v29);
+# unknown names fall back to the painter (bench_first_frame
+# uses the same map).
 FACES = {
     "painter": "clockface",
     "classic": "classicface",
     "digital": "digitalface",
     "metar": "metarface",
+    "attitude": "attface",
 }
 
 JOIN_TIMEOUT_MS = 15000   # ~15 s, then the portal (rehoming)

@@ -6,6 +6,25 @@ shipping) as small compose modules, selected from the admin page.
 Mark's direction (Nov 15, 2026): get the painter nailed down first,
 then include as many of these as practical.
 
+## Built faces (all selectable live from the admin pulldown)
+
+- **Painter** — the flagship (clockface.py; SPEC through v25).
+- **Classic analog** — the painter's dial minus the man, rust second
+  hand (classicface.py; v26).
+- **Digital** — HH:MM hero, seconds + AM/PM sub-line (digitalface.py;
+  v26; smooth type since v27).
+- **METAR analog** — the classic recoloured by a live flight
+  category, with decoded wind/vis/cloud lines (metarface.py +
+  metar.py; v28, text lift v28.1).
+- **Attitude maneuvers** — a steam-gauge attitude indicator flying
+  the Lazy Eight, the Chandelle and Eights on Pylons on a loop at
+  C182 pace, the analog clock drawn over it, the maneuver's name
+  curved on the bottom bezel (attface.py + attdata.py +
+  attlabels.py; v29). Mark's build, from the maneuver videos made
+  the same evening — the profiles are the videos' own models,
+  sampled; nothing is played back, the gauge is drawn from the
+  numbers each frame.
+
 Researched Nov 15, 2026; every entry verified against a real source.
 Suggested build order after the painter: Sweeper's Clock, 24-hour
 Airman GMT, mini ClockClock — then the rest roughly in list order.
@@ -85,3 +104,12 @@ clock, 1808 (https://en.wikipedia.org/wiki/Congreve_clock).
 
 Plus the two basics already planned alongside these: a classic
 12-hour analog face and a plain digital face.
+
+**Requirement (Mark, Nov 15, 2026, revised same day): EVERY face —
+painter included — shows the date (day and month) alongside the
+time, and the admin page gets a selector to turn the date off**
+(config `show_date`, default on; each face honours it). Digital: a
+date line under the time. Classic analog: a date element on the dial
+(window or text line) that suits the design. Painter: a small,
+tasteful date on the dial that doesn't fight the figure or the
+hands' sweep — placement proven in previews before it ships.

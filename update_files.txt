@@ -15,3 +15,6 @@ metar.py
 metarface.py
 smoothfont.py
 fontdata.py
+attface.py
+attdata.py
+attlabels.py

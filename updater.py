@@ -28,7 +28,8 @@ UPDATE_FILES = ("main.py", "display.py", "clockface.py", "figure.py",
                 "show.py", "timekeep.py", "prov.py", "updater.py",
                 "admin.py", "setupface.py", "connectface.py",
                 "classicface.py", "digitalface.py", "metar.py",
-                "metarface.py", "smoothfont.py", "fontdata.py")
+                "metarface.py", "smoothfont.py", "fontdata.py",
+                "attface.py", "attdata.py", "attlabels.py")
 MANIFEST_URL = ("https://raw.githubusercontent.com/%s/main/"
                 "update_files.txt" % GITHUB_REPO)
 RAW_URL = "https://raw.githubusercontent.com/%s/main/" % GITHUB_REPO
