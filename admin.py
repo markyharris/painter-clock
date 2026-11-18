@@ -41,6 +41,19 @@
 # while the two rebooting actions (Update now, Restart) return
 # a small auto-refreshing page that reloads the admin page once
 # the clock is back, instead of the old bare-text landings.
+#
+# v30 (Nov 18, 2026): Mark's regrouping. The Frost &
+# backlight and Cuckoo & idle life sections merge into one
+# section, "Painter Clock" (class sec-painter, wearing the
+# old frost tint), sitting where Frost & backlight sat;
+# Sleep keeps its own section after it. The Save settings
+# button moves up into the Status section - the settings
+# <form> now opens before Status so the button stays a
+# submit of the same form, and its handler is unchanged.
+# And the page centres itself: the body column is
+# margin-auto and the title is centred. Presentation
+# only, again - no config key, handler or field name
+# moved.
 import json
 import socket
 
@@ -210,8 +223,8 @@ def _show_date_options(current):
 
 
 def _tryit_buttons():
-    # These live inside the settings <form> (the Cuckoo & idle
-    # life section); formaction posts each to /tryit instead,
+    # These live inside the settings <form> (the Painter Clock
+    # section); formaction posts each to /tryit instead,
     # whose handler reads only the "routine" field - the same
     # semantics as the old separate form.
     out = ""
@@ -245,7 +258,8 @@ def _page(app, msg=""):
 <title>Painter Clock</title>
 <link rel="icon" href="%s">
 <style>
-body{font-family:sans-serif;margin:16px;max-width:860px}
+body{font-family:sans-serif;margin:16px auto;max-width:860px;padding:0 12px}
+h1{text-align:center}
 fieldset{margin:12px 0;border:1px solid #bbb;border-radius:6px}
 legend{font-weight:bold;padding:0 4px}
 input{margin:2px}
@@ -255,22 +269,22 @@ input[type=range]{width:230px;vertical-align:middle}
 .sec-status{background:#e9f1fd}
 .sec-display{background:#e7f6ec}
 .sec-rotate{background:#f3e8ee}
-.sec-frost{background:#e2f5f7}
+.sec-painter{background:#e2f5f7}
 .sec-sleep{background:#e9e4f5}
-.sec-idle{background:#fff6d9}
 .sec-update{background:#fdeee2}
 .sec-system{background:#fdeaea}
 h1 svg{height:30px;width:30px;vertical-align:-6px}
 </style></head><body>
 <h1>%s Painter Clock</h1>
 %s
+<form method="POST" action="/settings">
 <fieldset class="sec-status"><legend>Status</legend>
 <p>Time: %s (source: %s)<br>
 Wi-Fi: %s<br>
 Display: %s &middot; Uptime: %s &middot; Code: %s<br>
 Idle: %s<br>
-Update: %s</p></fieldset>
-<form method="POST" action="/settings">
+Update: %s</p>
+<p><button type="submit">Save settings</button></p></fieldset>
 <fieldset class="sec-display"><legend>Display</legend>
 <p>Face: <select name="face">%s</select></p>
 <p>METAR airport: <input name="metar_airport" size="5"
@@ -282,9 +296,17 @@ this station's flight category</i></p>
 <fieldset class="sec-rotate"><legend>Face rotation</legend>
 %s
 </fieldset>
-<fieldset class="sec-frost"><legend>Frost &amp; backlight</legend>
+<fieldset class="sec-painter"><legend>Painter Clock</legend>
 %s
 %s
+<p><label><input type="checkbox" name="cuckoo_enabled" %s>
+Cuckoo on the hour</label><br>
+<i>On the hour, after he has repainted both hands, he leans
+in and wipes a clear circle in the frost - his face, sharp,
+for a moment. Never during lights-out hours.</i></p>
+<p>Idle routines - try one (it runs at the next gap):<br>
+%s
+<button formaction="/trycuckoo">Try the cuckoo</button></p>
 </fieldset>
 <fieldset class="sec-sleep"><legend>Sleep</legend>
 <p><label><input type="checkbox" name="sleep_enabled" %s>
@@ -293,17 +315,6 @@ Lights out - he sleeps</label> from
 <input name="sleep_end" size="5" value="%s"> (HH:MM, 24h)<br>
 <i>In those hours the room goes dark and he lies down to
 sleep; the hands keep time in pale ink.</i></p>
-</fieldset>
-<fieldset class="sec-idle"><legend>Cuckoo &amp; idle life</legend>
-<p><label><input type="checkbox" name="cuckoo_enabled" %s>
-Cuckoo on the hour</label><br>
-<i>On the hour, after he has repainted both hands, he leans
-in and wipes a clear circle in the frost - his face, sharp,
-for a moment. Never during lights-out hours.</i></p>
-<p><button type="submit">Save settings</button></p>
-<p>Idle routines - try one (it runs at the next gap):<br>
-%s
-<button formaction="/trycuckoo">Try the cuckoo</button></p>
 </fieldset>
 </form>
 <fieldset class="sec-update"><legend>Update</legend>
@@ -339,10 +350,10 @@ This clock is a tribute, built with admiration.</i></p>
                 cfg["frost"]),
         _slider("backlight", "Backlight (0-100):", 100,
                 cfg["backlight"]),
-        "checked" if cfg["sleep_enabled"] else "",
-        cfg["sleep_start"], cfg["sleep_end"],
         "checked" if cfg.get("cuckoo_enabled", True) else "",
-        _tryit_buttons(), upd)
+        _tryit_buttons(),
+        "checked" if cfg["sleep_enabled"] else "",
+        cfg["sleep_start"], cfg["sleep_end"], upd)
 
 
 def _refresh_page(verb, delay):

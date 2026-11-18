@@ -1185,3 +1185,15 @@ Mark's verdict on v29.5: **"definitely smoother, but way too slow."** The smooth
 **Desk verification:** test_attface.py §A pins `TICK_MS` 200 / `RATE` 1.0; §B sweeps at 0.2 s (bounds 5.0/1.8); §D's elapsed assertions re-based to RATE 1.0 (0.5 cycle-seconds per 500 ms step); §F now finds **5** distinct attitude frames in one wall second. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
 
 **Bench-only:** press **Update now** once (v29.6 rides the manifest: attface.py). Two things to judge separately: the pace (real-time again) and the evenness — if the frames land unevenly (200 ms slipping even handless), the fallback is RATE 1.0 at 250 ms: 5.5° steps, rounded. If the pace is right and the motion reads smooth, the attitude face is done.
+
+## Addendum (Nov 18, 2026) — v30: the admin page, regrouped
+
+Mark's layout pass on the admin page, three changes, presentation only (admin.py):
+
+- **One "Painter Clock" section.** The *Frost & backlight* and *Cuckoo & idle life* sections merge into a single section headed **Painter Clock** (class `sec-painter`, wearing the old frost tint), sitting where Frost & backlight sat — after Face rotation, before Sleep. Inside, in order: the Frost slider, the Backlight slider, the cuckoo checkbox with its note, and the idle-routine Try-it row with Try the cuckoo. Sleep keeps its own section.
+- **Save settings moves up into Status.** The button now sits at the bottom of the Status (info) section; the settings `<form>` opens before Status so the button remains a submit of the same form. The /settings handler, every field name and the save semantics are unchanged.
+- **The page centres itself.** The body column is `margin: 16px auto` (with side padding for narrow screens) instead of hugging the left edge, and the "Painter Clock" title is centred.
+
+**Desk verification:** test_admin.py's section pins updated (Status / Display / Painter Clock / Sleep / Update / System) plus new structural pins — the old section classes and legends are gone, Save settings sits inside Status within the form, the frost/backlight/cuckoo/Try-it controls all fall inside the Painter Clock section's span, and the centring CSS is present. The full admin suite passes, including POST /settings saving exactly as before; mpy-cross (v1.29.0) clean on admin.py.
+
+**Bench-only:** press **Update now** once (v30 rides the manifest: admin.py), then reload the admin page. Nothing on the clock face changes — this is the page, not the dial.
