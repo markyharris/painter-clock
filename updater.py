@@ -16,9 +16,21 @@
 #     swap it in (old copy kept as .bak), reboot.
 # wifi_cfg.py (credentials) and config.json (settings) are NEVER
 # in the manifest - they belong to the board.
+#
+# v30.1 (Nov 18, 2026): memory hardening. After ~72 minutes of
+# the attitude face at 5 fps, an hourly check died with
+# "memory allocation failed, allocating 88064 bytes" - the
+# heap was too fragmented for the check's larger requests.
+# Two changes: check() and apply() run gc.collect() before
+# their first fetch, and local_sha() streams the file through
+# the hasher in 4 KB chunks instead of reading it whole
+# (fontdata.py is 155 KB - every hourly check used to hold
+# all of it in RAM at once). Digests are unchanged.
 import binascii
+import gc
 import hashlib
 import json
+import os
 import socket
 import ssl
 import time
@@ -53,9 +65,25 @@ def blob_sha(data):
 
 
 def local_sha(path):
+    """The file's git blob SHA, streamed through the
+    hasher in 4 KB chunks (v30.1: the whole-file read
+    before it held 155 KB in RAM for fontdata.py on
+    every check; the size comes from os.stat, so the
+    contents are never held). Same digest as
+    blob_sha() of the full contents."""
     try:
+        size = os.stat(path)[6]
+        h = hashlib.sha1()
+        h.update(b"blob ")
+        h.update(str(size).encode())
+        h.update(b"\x00")
         with open(path, "rb") as f:
-            return blob_sha(f.read())
+            while True:
+                chunk = f.read(4096)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return binascii.hexlify(h.digest()).decode()
     except OSError:
         return None  # missing file counts as "different" -> will fetch
 
@@ -228,6 +256,7 @@ def check():
     update is available. Cheap to call; main.py paces it hourly."""
     global _last_check
     _last_check = time.ticks_ms()
+    gc.collect()  # v30.1: defragment before the fetches
     try:
         remote = _remote_shas()
         names = _remote_manifest()
@@ -257,8 +286,8 @@ def apply():
     A failure mid-apply propagates (no reboot): files already
     swapped stay swapped, each was verified before its swap."""
     import machine
-    import os
     STATE["applying"] = True
+    gc.collect()  # v30.1: defragment before the fetches
     try:
         remote = _remote_shas()
         for name in _remote_manifest():

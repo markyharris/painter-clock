@@ -1197,3 +1197,15 @@ Mark's layout pass on the admin page, three changes, presentation only (admin.py
 **Desk verification:** test_admin.py's section pins updated (Status / Display / Painter Clock / Sleep / Update / System) plus new structural pins — the old section classes and legends are gone, Save settings sits inside Status within the form, the frost/backlight/cuckoo/Try-it controls all fall inside the Painter Clock section's span, and the centring CSS is present. The full admin suite passes, including POST /settings saving exactly as before; mpy-cross (v1.29.0) clean on admin.py.
 
 **Bench-only:** press **Update now** once (v30 rides the manifest: admin.py), then reload the admin page. Nothing on the clock face changes — this is the page, not the dial.
+
+## Addendum (Nov 18, 2026) — v30.1: updater memory hardening
+
+Mark's status paste at 14:44 MST showed the hourly update check dead: **"Update check failed: memory allocation failed, allocating 88064 bytes"** — after 1 h 12 min of uptime with the attitude face running at 5 fps, the heap was too fragmented to grant the check one of its larger requests. The clock itself was healthy (live display, NTP time, idle routines running).
+
+**The fix (updater.py only):**
+- `check()` and `apply()` run `gc.collect()` before their first fetch, defragmenting the heap while it's cheap.
+- `local_sha()` no longer reads each file whole to hash it — it streams the file through the SHA-1 hasher in 4 KB chunks, taking the size from `os.stat`. The worst offender was fontdata.py: every hourly check used to hold all 155 KB of it in RAM at once. Digests are unchanged (verified identical to `git hash-object`, including fontdata.py and figure.py).
+
+**Desk verification:** local_sha equivalence against git on four files + missing-file → None; mpy-cross (v1.29.0) clean on updater.py; the admin suite (which imports the updater) passes.
+
+**Bench-only:** the board is still running the old updater, so this one rides in the old way: **System → Restart first, then Update → Update now as soon as the clock is back**, while the heap is fresh. That single press delivers the v30 admin page and this hardening together; checks after that should stop tripping over fragmentation.
