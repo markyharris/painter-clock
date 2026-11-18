@@ -65,6 +65,17 @@
 # in what form. Cadence unchanged (TICK_MS 500):
 # one variable at a time.
 #
+# v29.4 (Nov 18, 2026): Mark's verdict on the
+# handless build: "a little better." With the hand
+# out of the picture he asked to push the frame
+# rate back up, so TICK_MS 500 -> 250 (4 fps) - a
+# doubling, but not all the way back to the 200 ms
+# that slipped in v29.1 (that build still had the
+# hand). The hand stays OFF for this step: one
+# variable at a time, again. Worst per-frame step
+# at 250 ms, measured on the data: 5.5 deg of bank,
+# 1.8 of pitch.
+#
 # THE GAUGE (the videos' instrument, at clock scale):
 # black bezel (r=237, grey rim line, four screws at the
 # diagonals), glass r=192. The ball is drawn per frame
@@ -122,8 +133,9 @@ TICK_SECONDS = True
 # compose in the state dict, which is what advances
 # the cycle phase smoothly). Night ignores it: the
 # sleep treatment still snaps on the minute.
-# v29.2: 200 -> 500 (2 fps) - see the header note.
-TICK_MS = 500
+# 200 (v29.1) -> 500 (v29.2) -> 250 (v29.4, hand
+# off) - see the header notes.
+TICK_MS = 250
 
 # v29.3 DIAGNOSTIC: no second hand on the day face -
 # see the header note. The drawing code stays; flip

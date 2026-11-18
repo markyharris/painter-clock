@@ -1150,3 +1150,13 @@ Mark's bench verdict on v29.2: "still not much better." His experiment, adopted 
 **Desk verification:** test_attface.py §A pins the flag off; §D's ms block now runs a twin check — the same phase composed with the flag on differs from the flag-off frame, and the tail-dot pixel is CREAM with the hand and not without it; §F drops its second-hand probe. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
 
 **Bench-only:** press **Update now** once (v29.3 rides the manifest: attface.py). Judge the ball alone: does it move evenly at twice a second with no hand on the dial? If yes, the hand was the irritant — the options then are to leave it off or bring it back sweeping with the millisecond phase instead of stepping. If no, the frame cost itself is the problem and the next lever is cadence (750 ms) or a cheaper compose.
+
+## Addendum (Nov 18, 2026) — v29.4: handless at 4 fps
+
+Mark's bench verdict on the v29.3 diagnostic: **"a little better"** without the second hand. With the hand out of the picture he asked to push the frame rate back up.
+
+**The change:** `attface.TICK_MS` 500 → 250 (4 fps). The second hand stays OFF (`SECOND_HAND` still False) — one variable at a time, again. 250 ms doubles the v29.2/v29.3 rate without returning all the way to the 200 ms that slipped in v29.1 (a build that still had the hand). Worst per-frame step at 250 ms, measured on the data: **5.5° of bank, 1.8° of pitch** (at 500 ms: 10.5°/3.0°; at v29's whole-second step: 19.5°/5.5°).
+
+**Desk verification:** test_attface.py §A pins `TICK_MS == 250`; §B sweeps at 0.25 s (bounds 6.0/2.0); §F now counts **4 distinct attitude frames within one wall second**. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
+
+**Bench-only:** press **Update now** once (v29.4 rides the manifest: attface.py). Two outcomes teach different things: if 4 fps holds evenly handless, the v29.1 failure was the hand-plus-rate combination, and the remaining question is whether the hand returns as a sweep; if 250 ms slips even without the hand, the board's frame cost sits between 250 and 500 ms and 333 ms is the next step down.
