@@ -16,7 +16,8 @@
 # frosted-glass strength 0..100 - 0 is the sharp look), backlight
 # (the painted light behind him, 0..100 - v18; 0 is the pre-v18
 # dial), show_date
-# (the date line every face draws - day and month; v11), and the
+# (the date line every face draws - day and month; v11),
+# metar_airport (the METAR analog face's station; v28), and the
 # sleep keys - sleep_enabled / sleep_start / sleep_end, whose
 # behaviour (lights out, he lies down, the hands snap pale;
 # SPEC Nov 13 addendum) landed in v15. cuckoo_enabled (v20)
@@ -40,6 +41,7 @@
 import json
 import socket
 
+import metar as metarmod
 import show as showmod
 import updater
 
@@ -58,9 +60,13 @@ TRYIT = (("watch", "Wristwatch check"), ("cap", "Cap-off brow wipe"),
 DEFAULT_CONFIG = {
     # Clock face module (SPEC Nov 15 addendum): "painter"
     # (clockface.py) | "classic" (classicface.py) | "digital"
-    # (digitalface.py) - all three built (v26); unknown names
-    # fall back to the painter.
+    # (digitalface.py) | "metar" (metarface.py) - all four
+    # built (v26, v28); unknown names fall back to the
+    # painter.
     "face": "painter",
+    # The METAR analog face's station (v28): one airport id,
+    # validated by metar.normalise_airport on save.
+    "metar_airport": "KFLG",
     "brightness": 255,       # panel backlight, 0..255
     "frost": 55,             # frosted glass, 0..100 (0 = sharp)
     "backlight": 50,         # painted light behind him, 0..100
@@ -72,7 +78,7 @@ DEFAULT_CONFIG = {
     "sleep_end": "06:00",
 }
 
-FACES = ("painter", "classic", "digital")
+FACES = ("painter", "classic", "digital", "metar")
 
 # The tab / header icon: an analog clock face, hands (pointers)
 # at the classic 10:10, in the dial's own cream and ink. One
@@ -136,11 +142,13 @@ def _valid_hhmm(s):
     return 0 <= h < 24 and 0 <= m < 60
 
 
-# Pulldown labels (v26): the values stay the config's face
-# names; the labels say what the faces are.
+# Pulldown labels (v26; the METAR analog joined in v28):
+# the values stay the config's face names; the labels say
+# what the faces are.
 FACE_LABELS = {"painter": "Painter",
                "classic": "Classic analog",
-               "digital": "Digital"}
+               "digital": "Digital",
+               "metar": "METAR analog"}
 
 
 def _face_options(current):
@@ -223,6 +231,9 @@ Update: %s</p></fieldset>
 <form method="POST" action="/settings">
 <fieldset class="sec-display"><legend>Display</legend>
 <p>Face: <select name="face">%s</select></p>
+<p>METAR airport: <input name="metar_airport" size="5"
+value="%s"> <i>for the METAR analog face - its dial wears
+this station's flight category</i></p>
 %s
 <p>Show date: <select name="show_date">%s</select></p>
 </fieldset>
@@ -274,6 +285,7 @@ This clock is a tribute, built with admiration.</i></p>
         app["display_state"], app["uptime"], app["version"],
         app.get("idle_str", "-"), upd,
         _face_options(cfg["face"]),
+        cfg.get("metar_airport", "KFLG"),
         _slider("brightness", "Brightness (0-255):", 255,
                 cfg["brightness"]),
         _show_date_options(cfg.get("show_date", True)),
@@ -352,8 +364,23 @@ def step(app):
         if "POST /settings" in req:
             form = _parse_form(req)
             cfg = app["config"]
+            note = ""
             if form.get("face") in FACES:
                 cfg["face"] = form["face"]
+            if "metar_airport" in form:
+                # the METAR face's station (v28): normalised
+                # through metar.py's own door - a junk entry
+                # keeps the saved value and says so on the
+                # page, it never reaches the fetcher.
+                norm = metarmod.normalise_airport(
+                    form["metar_airport"])
+                if norm is not None:
+                    cfg["metar_airport"] = norm
+                elif form["metar_airport"].strip():
+                    note = (" Airport '%s' not accepted - "
+                            "kept %s."
+                            % (form["metar_airport"],
+                               cfg.get("metar_airport", "KFLG")))
             if form.get("show_date") in ("on", "off"):
                 cfg["show_date"] = form["show_date"] == "on"
             try:
@@ -391,7 +418,7 @@ def step(app):
                 cfg["sleep_end"] = form["sleep_end"]
             save_config(cfg)
             app["changed"] = True
-            _send_page(conn, app, "Settings saved.")
+            _send_page(conn, app, "Settings saved." + note)
         elif "POST /tryit" in req:
             form = _parse_form(req)
             name = form.get("routine", "")

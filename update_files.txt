@@ -11,5 +11,7 @@ setupface.py
 connectface.py
 classicface.py
 digitalface.py
+metar.py
+metarface.py
 smoothfont.py
 fontdata.py

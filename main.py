@@ -62,6 +62,7 @@ import admin
 import connectface
 import display
 import figure as figmod
+import metar as metarmod
 import prov
 import setupface
 import show as showmod
@@ -71,14 +72,15 @@ import updater
 VERSION = "1.0"
 
 # Face selection (SPEC Nov 15 addendum): the admin "face" key
-# names a module with render_static()/compose(). All three
-# faces are built (the classic and digital landed in v26);
-# unknown names fall back to the painter (bench_first_frame
-# uses the same map).
+# names a module with render_static()/compose(). All four
+# faces are built (the classic and digital landed in v26,
+# the METAR analog in v28); unknown names fall back to the
+# painter (bench_first_frame uses the same map).
 FACES = {
     "painter": "clockface",
     "classic": "classicface",
     "digital": "digitalface",
+    "metar": "metarface",
 }
 
 JOIN_TIMEOUT_MS = 15000   # ~15 s, then the portal (rehoming)
@@ -330,6 +332,8 @@ def main():
     frost_now = cfg.get("frost", 55)
     backlight_now = cfg.get("backlight", 50)
     date_now = cfg.get("show_date", True)
+    airport_now = cfg.get("metar_airport", "KFLG")
+    metarmod.set_airport(airport_now)
     face_mod = _face_module(face_name)
     _apply_date(face_mod, cfg)
     _apply_backlight(face_mod, cfg)
@@ -347,6 +351,12 @@ def main():
     # 7. Admin + after-boot update check (flags only).
     admin.start()
     updater.check()
+    if face_name == "metar":
+        # one METAR fetch up front (v28): the face's first
+        # frames already wear real weather instead of NO
+        # DATA while the Connected splash holds; the loop's
+        # housekeeping keeps it fresh from here.
+        metarmod.poll(force=True)
 
     fig = figmod.Figure()
     show = showmod.Show(fig, display.dial())
@@ -520,6 +530,19 @@ def main():
                                backlight_now)
                 drawn_total = None  # force a repaint
                 print("main: frost changed to %s" % frost_now)
+            if cfg.get("metar_airport", "KFLG") != airport_now:
+                # the METAR face's station changed (v28): the
+                # fetcher drops the old station's record and
+                # refetches promptly, not at the next cadence;
+                # the face re-renders on the new snapshot by
+                # itself (its static layer is data-keyed).
+                airport_now = cfg.get("metar_airport", "KFLG")
+                metarmod.set_airport(airport_now)
+                if wlan is not None and wlan.isconnected():
+                    metarmod.poll(force=True)
+                face_key = None     # force a repaint
+                print("main: metar airport changed to %s"
+                      % airport_now)
 
         # Housekeeping, only while he is idle - never mid-show.
         if not show.running and \
@@ -527,6 +550,8 @@ def main():
             last_housekeep = now_ms
             if wlan is not None and wlan.isconnected():
                 updater.maybe_check()
+                if face_name == "metar":
+                    metarmod.poll()
                 timekeep.maybe_resync()
             gc.collect()
 
