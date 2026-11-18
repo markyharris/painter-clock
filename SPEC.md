@@ -1173,3 +1173,15 @@ Mark's verdict on v29.4 (4 fps, handless): "still pretty jumpy." By then the exp
 **Desk verification:** test_attface.py §A pins `RATE` and `SMOOTH_W`; §B adds the effective-step sweep at 0.15 s (bounds 3.6/1.3); §D's ms steps are 500 ms (0.3 cycle-seconds at RATE) with the elapsed assertions re-based; §F still finds 4 distinct attitude frames in one wall second. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
 
 **Bench-only:** press **Update now** once (v29.5 rides the manifest: attface.py). Judge: the same maneuvers, flown statelier — steps a little over half the v29.4 size, with softened onsets. If it is still jumpier than Mark wants, the remaining dial is RATE itself (0.5 was the runner-up option); if the slowdown feels wrong, RATE back to 1.0 keeps the smoothing.
+
+## Addendum (Nov 18, 2026) — v29.6: full speed back, 5 fps
+
+Mark's verdict on v29.5: **"definitely smoother, but way too slow."** The smoothing works; the 60% pace doesn't. v29.6 keeps the smoothing and buys the smoothness back with frame rate instead of slowdown:
+
+- `RATE` **0.6 → 1.0** — the true C182 pace again; the cycle is back to ~4.9 minutes. RATE stays in the code as the speed dial.
+- `TICK_MS` **250 → 200** (5 fps) — the first *handless* try at 200 ms; v29.1's slip at that cadence was with the second hand still drawn. Worst per-frame step at 200 ms, measured on the data: **4.5° of bank / 1.5° of pitch**, corners rounded by the unchanged `SMOOTH_W` 0.3 blur — between v29.5's 3.5° and v29.4's 5.5°.
+- The second hand stays off.
+
+**Desk verification:** test_attface.py §A pins `TICK_MS` 200 / `RATE` 1.0; §B sweeps at 0.2 s (bounds 5.0/1.8); §D's elapsed assertions re-based to RATE 1.0 (0.5 cycle-seconds per 500 ms step); §F now finds **5** distinct attitude frames in one wall second. test_attface.py and the op-count guard pass; mpy-cross (v1.29.0) clean on attface.py.
+
+**Bench-only:** press **Update now** once (v29.6 rides the manifest: attface.py). Two things to judge separately: the pace (real-time again) and the evenness — if the frames land unevenly (200 ms slipping even handless), the fallback is RATE 1.0 at 250 ms: 5.5° steps, rounded. If the pace is right and the motion reads smooth, the attitude face is done.

@@ -96,6 +96,21 @@
 # reversals - ease instead of kicking. The hand
 # stays off.
 #
+# v29.6 (Nov 18, 2026): Mark's verdict on v29.5 -
+# "definitely smoother, but way too slow." The
+# smoothing works; the speed doesn't. So RATE goes
+# back to 1.0 - the true C182 pace, the cycle back
+# to ~4.9 minutes - and the smoothness is bought
+# back with frame rate instead: TICK_MS 250 -> 200
+# (5 fps), handless (the 200 ms slip in v29.1 was
+# WITH the hand; this is the first handless try at
+# 5 fps). The blur stays. Worst per-frame step at
+# 200 ms, measured on the data: 4.5 deg of bank,
+# 1.5 of pitch, with the corners rounded - between
+# v29.5's 3.5 and v29.4's 5.5. If 200 ms slips
+# even handless, the fallback is RATE 1.0 at
+# 250 ms (5.5 deg, rounded).
+#
 # THE GAUGE (the videos' instrument, at clock scale):
 # black bezel (r=237, grey rim line, four screws at the
 # diagonals), glass r=192. The ball is drawn per frame
@@ -153,9 +168,10 @@ TICK_SECONDS = True
 # compose in the state dict, which is what advances
 # the cycle phase smoothly). Night ignores it: the
 # sleep treatment still snaps on the minute.
-# 200 (v29.1) -> 500 (v29.2) -> 250 (v29.4, hand
-# off) - see the header notes.
-TICK_MS = 250
+# 200 (v29.1, with hand) -> 500 (v29.2) -> 250
+# (v29.4, hand off) -> 200 (v29.6, hand off, full
+# rate) - see the header notes.
+TICK_MS = 200
 
 # v29.3 DIAGNOSTIC: no second hand on the day face -
 # see the header note. The drawing code stays; flip
@@ -244,10 +260,11 @@ def _abs_seconds(tup):
     return days * 86400 + tup[3] * 3600 + tup[4] * 60 + tup[5]
 
 
-# v29.5: the cycle runs at 60% of real time - see
-# the header note. One constant, applied to every
-# advance below; attdata keeps the true C182 pace.
-RATE = 0.6
+# v29.5: the cycle ran at 60% of real time - Mark
+# found it way too slow, so v29.6 puts RATE back
+# to 1.0 (true C182 pace). The constant stays as
+# the speed dial; attdata keeps the true pace.
+RATE = 1.0
 
 # v29.5: _smooth's binomial half-window, in cycle
 # seconds - the displayed attitude averages the
