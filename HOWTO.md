@@ -289,19 +289,32 @@ updates and power cuts.
 
 ## 8. Rehoming — new Wi-Fi or new owner
 
-The clock never needs a keyboard, monitor or reflash to move:
+The clock never needs a keyboard, monitor or reflash to move. In
+the usual move, you do **not** need the BOOT button at all:
 
-1. Unplug the clock.
-2. Plug it back in and, **just after** it starts, hold the **BOOT**
-   button for about a second.
-   Timing matters: hold it *after* power-up begins. Holding BOOT
-   while you plug in puts the chip in firmware-download mode
-   instead — nothing is harmed, just unplug and try again.
-3. The clock starts the **`PainterClock-Setup`** network with the
-   painted setup screen. Join it with a phone and use the captive
-   portal to enter the new network, exactly as at first boot (§4).
+1. Plug the clock in at the new location.
+2. It tries the saved network for about 15 seconds. If that SSID is
+   absent, or the saved password no longer works, the join fails
+   and the clock automatically shows the setup screen and starts
+   the **`PainterClock-Setup`** network.
+3. Join it with a phone and use the captive portal to enter the new
+   network, exactly as at first boot (§4).
 4. The clock restarts onto the new network and shows its new IP
    address on the Connected screen for about 35 seconds.
+
+The **BOOT** button is a manual override: use it when the old
+network is still reachable but you want to switch anyway, or when
+you want setup mode immediately without waiting for the saved
+network to fail. Unplug the clock, plug it back in, and **just
+after** it starts, hold **BOOT** for about a second. Timing
+matters: hold it *after* power-up begins. Holding BOOT while you
+plug in puts the chip in firmware-download mode instead — nothing
+is harmed, just unplug and try again.
+
+One boundary: the automatic fallback is a boot-time check. If the
+clock is already running and its network disappears mid-run, it
+does not jump into setup mode until the next restart or power
+cycle.
 
 ## 9. Updates
 

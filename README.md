@@ -53,9 +53,11 @@ face has a dark night treatment during sleep hours.
   frost and backlight, the cuckoo and idle-life switches, update and
   restart, all in the clock's own web page. After a boot the clock
   shows its admin address (its IP) on screen for about 35 seconds.
-- **Rehoming** — hold the BOOT button just after power-up and the
-  clock starts its own `PainterClock-Setup` network; join it with a
-  phone, enter the new Wi-Fi, done. No keyboard, monitor or reflash.
+- **Rehoming** — if the saved network can't be joined at boot, the
+  clock automatically starts its own `PainterClock-Setup` network;
+  holding BOOT just after power-up forces the same setup mode
+  immediately. Join it with a phone, enter the new Wi-Fi, done. No
+  keyboard, monitor or reflash.
 - **Updates** — the clock checks this repository after boot and
   hourly, and flags "update available" in the admin page. Installing
   is always a deliberate **Update now** press; each file is verified
